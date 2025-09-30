@@ -1,29 +1,36 @@
-const static float2 position[3] ={
-  {0.0,-0.5},
-  {0.5,0.5},
-  {-0.5,0.5}
+struct VertexIn {
+    float3 position;
+    float3 color;
+    float2 tex_coord;
 };
 
-const static float3 colors[3] ={
-  {1.0,0.0,0.0},
-  {0.0,1.0,0.0},
-  {0.0,0.0,1.0}
+struct UniformBufferObject {
+    float4x4 modu;
+    float4x4 view;
+    float4x4 proj;
 };
+// [[vk::binding(1, 0)]]
+ConstantBuffer<UniformBufferObject> ubo;
+
+Sampler2D texture;
 
 struct VertexOutput {
-    float3 color : Color;
     float4 sv_position : SV_Position;
+    float3 color;
+    float2 tex_coord;
 };
 
 [shader("vertex")]
-VertexOutput vertMain(uint vid: SV_VertexID) {
+VertexOutput vertMain(VertexIn vertex_in) {
     VertexOutput output;
-    output.color = colors[vid];
-    output.sv_position = float4(position[vid],0.0,1.0);
+    output.sv_position = mul(ubo.proj, mul(ubo.view, mul(ubo.modu, float4(vertex_in.position, 1.0))));
+    output.color = vertex_in.color;
+    output.tex_coord = vertex_in.tex_coord;
     return output;
 }
 
 [shader("fragment")]
-float4 fragMain(float3 color :Color) :SV_Target {
-    return float4(color,1.0);
+float4 fragMain(VertexOutput vertex) : SV_Target {
+    return texture.Sample(vertex.tex_coord);
+    // return float4(vertex.tex_coord,1.0f,1.0f);
 }

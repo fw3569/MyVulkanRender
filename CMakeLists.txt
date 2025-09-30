@@ -58,5 +58,6 @@ endfunction()
 add_slang_shader_target(slang_shaders SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/test_shader.slang")
 add_dependencies(test slang_shaders)
 
+target_compile_options(test PRIVATE "-D DATA_FILE_PATH=\"${CMAKE_CURRENT_LIST_DIR}/data\"")
 target_compile_options(test PRIVATE "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS")
 set_target_properties(test PROPERTIES CXX_STANDARD 20)
