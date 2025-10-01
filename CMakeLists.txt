@@ -5,7 +5,6 @@ set(CMAKE_BUILD_TYPE RelWithDebInfo)
 # set(CMAKE_C_COMPILER clang)
 # set(CMAKE_CXX_COMPILER clang++)
 project(Test)
-
 add_executable(test src/test.cpp)
 
 find_package(Vulkan REQUIRED)
@@ -57,6 +56,13 @@ endfunction()
 
 add_slang_shader_target(slang_shaders SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/test_shader.slang")
 add_dependencies(test slang_shaders)
+
+# find_package(tinyobjloader REQUIRED)
+# target_include_directories(test "${Vulkan_INCLUDE_DIR}/vulkan/vulkan.cppm")
+# target_link_libraries(test
+# PRIVATE
+# tinyobjloader::tinyobjloader
+# )
 
 target_compile_options(test PRIVATE "-D DATA_FILE_PATH=\"${CMAKE_CURRENT_LIST_DIR}/data\"")
 target_compile_options(test PRIVATE "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS")
