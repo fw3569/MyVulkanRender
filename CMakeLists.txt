@@ -37,7 +37,7 @@ function(add_slang_shader_target TARGET)
   set(SHADERS_DIR "${CMAKE_CURRENT_LIST_DIR}/gen_shaders")
   set(SHADERS_PATH "${SHADERS_DIR}/slang.spv")
   # set(SHADERS_PATH "${SHADERS_DIR}/slang.spv" CACHE STRING "" FORCE)
-  set(ENTRY_POINTS -entry vertMain -entry fragMain)
+  set(ENTRY_POINTS -entry vertMain -entry fragMain -entry compParticle -entry vertParticle -entry fragParticle)
   target_compile_options(test PRIVATE "-D SHADER_FILE_PATH=\"${SHADERS_PATH}\"")
   add_custom_command(
     OUTPUT "${SHADERS_DIR}"
