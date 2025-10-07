@@ -20,6 +20,7 @@ import vulkan_hpp;
 #include <GLFW/glfw3native.h>
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_FORCE_LEFT_HANDED
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -52,22 +53,24 @@ std::cout<<std::endl;}
 
 namespace {
   struct Vertex{
-    glm::vec3 position;
-    glm::vec3 color;
+    alignas(16) glm::vec3 position;
+    alignas(16) glm::vec4 diffuse_specular;
+    alignas(16) glm::vec3 normal;
     glm::vec2 tex_coord;
 
     static vk::VertexInputBindingDescription GetBindingDescription(){
       return {0, sizeof(Vertex), vk::VertexInputRate::eVertex};
     }
-    static std::array<vk::VertexInputAttributeDescription, 3> GetAttributeDescription(){
+    static std::array<vk::VertexInputAttributeDescription, 4> GetAttributeDescription(){
       return {
         vk::VertexInputAttributeDescription{0,0,vk::Format::eR32G32B32Sfloat,   offsetof(Vertex,position)},
-        vk::VertexInputAttributeDescription{1,0,vk::Format::eR32G32B32Sfloat,offsetof(Vertex,color)},
-        vk::VertexInputAttributeDescription{2,0,vk::Format::eR32G32Sfloat,offsetof(Vertex,tex_coord)}
+        vk::VertexInputAttributeDescription{1,0,vk::Format::eR32G32B32A32Sfloat,offsetof(Vertex,diffuse_specular)},
+        vk::VertexInputAttributeDescription{2,0,vk::Format::eR32G32B32Sfloat,offsetof(Vertex,normal)},
+        vk::VertexInputAttributeDescription{3,0,vk::Format::eR32G32Sfloat,offsetof(Vertex,tex_coord)}
       };
     }
     bool operator==(const Vertex& other) const {
-      return position == other.position && color == other.color && tex_coord == other.tex_coord;
+      return position == other.position && diffuse_specular == other.diffuse_specular && tex_coord == other.tex_coord;
     }
   };
   // std::vector<Vertex> g_vertex_in{
@@ -92,6 +95,12 @@ namespace {
     alignas(16) glm::mat4 modu;
     alignas(16) glm::mat4 view;
     alignas(16) glm::mat4 proj;
+    struct Light {
+      alignas(16) glm::vec3 pos;
+      alignas(16) glm::vec3 intensities;
+    };
+    alignas(16) Light light;
+    alignas(16) glm::vec3 camera_pos;
   };
 
   struct Particle{
@@ -118,7 +127,7 @@ namespace std {
     template<> struct hash<Vertex> {
         size_t operator()(Vertex const& vertex) const {
             return ((hash<glm::vec3>()(vertex.position) ^
-                   (hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+                   (hash<glm::vec3>()(vertex.diffuse_specular) << 1)) >> 1) ^
                    (hash<glm::vec2>()(vertex.tex_coord) << 1);
         }
     };
@@ -519,7 +528,7 @@ namespace {
         .binding = 0,
         .descriptorType = vk::DescriptorType::eUniformBuffer,
         .descriptorCount = 1,
-        .stageFlags = vk::ShaderStageFlagBits::eVertex,
+        .stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
         .pImmutableSamplers = nullptr
       },
       {
@@ -634,7 +643,7 @@ namespace {
       .rasterizerDiscardEnable = vk::False,
       .polygonMode = vk::PolygonMode::eFill,
       .cullMode = vk::CullModeFlagBits::eBack,
-      .frontFace = vk::FrontFace::eClockwise,
+      .frontFace = vk::FrontFace::eCounterClockwise,
       .depthBiasEnable = vk::False,
       .depthBiasConstantFactor = 1.0f,
       .depthBiasClamp = 0.0f,
@@ -707,12 +716,12 @@ namespace {
     g_particle_pipeline_layout = vk::raii::PipelineLayout(g_device, pipeline_layout_info);
     pipeline_info.pStages = particle_pipeline_shader_stage_create_info;
     binding_desc = Particle::GetBindingDescription();
-    attribute_desc = Particle::GetAttributeDescription();
+    auto particle_attribute_desc = Particle::GetAttributeDescription();
     vk::PipelineVertexInputStateCreateInfo particle_vertex_input_info{
       .vertexBindingDescriptionCount = 1,
       .pVertexBindingDescriptions = &binding_desc,
-      .vertexAttributeDescriptionCount = attribute_desc.size(),
-      .pVertexAttributeDescriptions = attribute_desc.data(),
+      .vertexAttributeDescriptionCount = particle_attribute_desc.size(),
+      .pVertexAttributeDescriptions = particle_attribute_desc.data(),
     };
     pipeline_info.pVertexInputState = &particle_vertex_input_info;
     input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo{
@@ -793,7 +802,12 @@ namespace {
             attr.vertices[3*index.vertex_index+1],
             attr.vertices[3*index.vertex_index+2]
           },
-          .color = {1.0f,1.0f,1.0f},
+          .diffuse_specular = {0.3f,0.3f,0.3f,50.0f},
+          .normal = {
+            attr.normals[3*index.normal_index+0],
+            attr.normals[3*index.normal_index+1],
+            attr.normals[3*index.normal_index+2],
+          },
           .tex_coord = {
             attr.texcoords[2*index.texcoord_index+0],
             1.0f-attr.texcoords[2*index.texcoord_index+1]
@@ -1537,14 +1551,15 @@ class TriangleRhi{
   }
   bool UpdateDate(){
     UniformBufferObject ubo;
-    ubo.modu = glm::rotate<float>(glm::mat4(1.0f),(m_current_time-m_start_time)*glm::radians(0.0f),glm::vec3(0.0f,0.0f,1.0f));
+    glm::vec3 camera_pos{1.0f,1.0f,1.0f};
+    ubo.modu = glm::rotate<float>(glm::mat4(1.0f),(m_current_time-m_start_time)*glm::radians(10.0f),glm::vec3(0.0f,0.0f,1.0f));
     // https://learnopengl.com/Getting-started/Coordinate-Systems
     // https://learnopengl.com/Getting-started/Camera
-    ubo.view = glm::lookAt(glm::vec3(1.0f,-1.0f,1.0f),glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,1.0f));
+    ubo.view = glm::lookAt(camera_pos,glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,-1.0f));
     ubo.proj = glm::perspective<float>(glm::radians(90.0f),static_cast<float>(g_swapchain_extent.width) / static_cast<float>(g_swapchain_extent.height), 0.1f, 10.0f);
-    // flip input and output y axis
-    ubo.modu=glm::scale(ubo.modu,glm::vec3{1.0f,-1.0f,1.0f});
-    ubo.proj[1][1]*=-1;
+    ubo.light.pos = glm::vec3(1.0f,0.0f,2.0f);
+    ubo.light.intensities = glm::vec3(10.0f,10.0f,10.0f);
+    ubo.camera_pos = camera_pos;
     memcpy(g_ubo_buffer_maped[m_frame_index], &ubo, sizeof(ubo));
     return true;
   }
