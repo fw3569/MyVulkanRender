@@ -199,9 +199,8 @@ namespace {
   std::vector<void*> g_particle_ubo_buffer_maped;
   std::vector<vk::raii::Buffer> g_particle_buffer;
   std::vector<vk::raii::DeviceMemory> g_particle_buffer_memory;
-  static uint64_t g_compute_complete_count = 0;
-  vk::raii::Semaphore g_compute_complete_semaphore = nullptr;
-  std::vector<vk::raii::Semaphore> g_render_particle_finished_semaphore;
+  static uint64_t g_particle_compute_count = 0;
+  vk::raii::Semaphore g_particle_compute_semaphore = nullptr;
   const std::vector kValidationLayers = {
     "VK_LAYER_KHRONOS_validation"
   };
@@ -379,9 +378,9 @@ namespace {
       if(!all_found){
         continue;
       }
-      auto features = device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR>();
+      auto features = device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR,vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>();
       bool supports_required_features =
-        features.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering && features.get<vk::PhysicalDeviceVulkan13Features>().synchronization2 && features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState && features.get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy && features.get<vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR>().timelineSemaphore;
+        features.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering && features.get<vk::PhysicalDeviceVulkan13Features>().synchronization2 && features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState && features.get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy && features.get<vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR>().timelineSemaphore && features.get<vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>().dynamicRenderingLocalRead;
       if(found == false||(device_properties.deviceType==vk::PhysicalDeviceType::eDiscreteGpu&&g_physical_device.getProperties().deviceType!=vk::PhysicalDeviceType::eDiscreteGpu&&supports_required_features)){
         g_physical_device = device;
         found = true;
@@ -411,11 +410,12 @@ namespace {
       .pQueuePriorities = queue_priorities
     };
     vk::PhysicalDeviceFeatures devices_features;
-    vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR> feature_chain = {
+    vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,vk::PhysicalDeviceTimelineSemaphoreFeaturesKHR,vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR> feature_chain = {
       {.features = {.samplerAnisotropy = true}},
       {.synchronization2 = true, .dynamicRendering = true},
       {.extendedDynamicState = true},
-      {.timelineSemaphore = true}
+      {.timelineSemaphore = true},
+      {.dynamicRenderingLocalRead = true}
     };
     vk::DeviceCreateInfo device_create_info{
       .pNext = feature_chain.get<vk::PhysicalDeviceFeatures2>(),
@@ -666,8 +666,8 @@ namespace {
       .srcColorBlendFactor = vk::BlendFactor::eSrcAlpha,
       .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
       .colorBlendOp = vk::BlendOp::eAdd,
-      .srcAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
-      .dstAlphaBlendFactor = vk::BlendFactor::eZero,
+      .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+      .dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
       .alphaBlendOp = vk::BlendOp::eAdd,
       .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
     };
@@ -900,7 +900,7 @@ namespace {
       particles[i].pos.x=std::rand()/float(RAND_MAX)*kParticleRange-kParticleRange/2.0f;
       particles[i].pos.y=std::rand()/float(RAND_MAX)*kParticleRange-kParticleRange/2.0f;
       particles[i].pos.z=0.3f;
-      particles[i].v=glm::vec3{0.0f,0.0f,0.00025f};
+      particles[i].v=glm::vec3{0.0f,0.0f,0.2f};
       particles[i].color=glm::vec3(1.0f);
     }
     vk::raii::Buffer temp_buffer = nullptr;
@@ -1347,105 +1347,6 @@ namespace {
       .imageView = g_depth_image_view,
       .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
       .loadOp = vk::AttachmentLoadOp::eClear,
-      .storeOp = vk::AttachmentStoreOp::eStore,
-      .clearValue = vk::ClearDepthStencilValue{1.0f, 0}
-    };
-    vk::RenderingInfo rendering_info{
-      .renderArea = {.offset = {0, 0}, .extent = g_swapchain_extent},
-      .layerCount = 1,
-      .colorAttachmentCount = 1,
-      .pColorAttachments = &attachment_info,
-      .pDepthAttachment = &depth_info
-    };
-    g_command_buffer[frame_index].beginRendering(rendering_info);
-    g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_graphics_pipeline);
-    g_command_buffer[frame_index].bindVertexBuffers(0, *g_vertex_buffer, {0});
-    g_command_buffer[frame_index].bindIndexBuffer(*g_index_buffer, 0, vk::IndexType::eUint32);
-    g_command_buffer[frame_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
-    g_command_buffer[frame_index].setViewport(0, viewport);
-    g_command_buffer[frame_index].setScissor(0, scissor);
-    g_command_buffer[frame_index].drawIndexed(g_index_in.size(),1,0,0,0);
-    g_command_buffer[frame_index].endRendering();
-    // TransformImageLayout(
-    //   image_index,
-    //   frame_index,
-    //   vk::ImageLayout::eColorAttachmentOptimal,
-    //   vk::ImageLayout::ePresentSrcKHR,
-    //   vk::AccessFlagBits2::eColorAttachmentWrite,
-    //   {},
-    //   vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-    //   vk::PipelineStageFlagBits2::eBottomOfPipe
-    // );
-    g_command_buffer[frame_index].end();
-  }
-  void CreateSyncObjects(){
-    uint32_t image_count = g_swapchain_images.size();
-    for(uint32_t i=0;i<image_count;++i){
-      g_present_complete_semaphore.emplace_back(vk::raii::Semaphore(g_device, vk::SemaphoreCreateInfo()));
-      g_render_finished_semaphore.emplace_back(vk::raii::Semaphore(g_device, vk::SemaphoreCreateInfo()));
-      g_draw_fence.emplace_back(vk::raii::Fence(g_device, {.flags = vk::FenceCreateFlagBits::eSignaled}));
-      g_render_particle_finished_semaphore.emplace_back(vk::raii::Semaphore(g_device, vk::SemaphoreCreateInfo()));
-    }
-    vk::SemaphoreTypeCreateInfo timeline_type_info{
-      .semaphoreType = vk::SemaphoreType::eTimeline,
-      .initialValue = 0,
-    };
-    g_compute_complete_semaphore = vk::raii::Semaphore(g_device, {.pNext = &timeline_type_info});
-  }
-  void DrawParticles(
-    uint32_t image_index,
-    uint32_t frame_index,
-    float delta_time,
-    vk::Viewport viewport = vk::Viewport(0.0f, 0.0f, static_cast<float>(g_swapchain_extent.width),static_cast<float>(g_swapchain_extent.height), 0.0f, 1.0f),
-    vk::Rect2D scissor = vk::Rect2D(vk::Offset2D(0,0), g_swapchain_extent)){
-    ParticleUbo ubo;
-    ubo.delta_time = delta_time;
-    memcpy(g_particle_ubo_buffer_maped[frame_index],&ubo,sizeof(ParticleUbo));
-
-    uint32_t compute_cb_index = frame_index+g_swapchain_images.size()*2;
-    g_command_buffer[compute_cb_index].reset();
-    g_command_buffer[compute_cb_index].begin({});
-    g_command_buffer[compute_cb_index].bindPipeline(vk::PipelineBindPoint::eCompute, g_compute_pipeline);
-    g_command_buffer[compute_cb_index].bindDescriptorSets(vk::PipelineBindPoint::eCompute, g_compute_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
-    g_command_buffer[compute_cb_index].dispatch(kParticleCount/256,1,1);
-    g_command_buffer[compute_cb_index].end();
-    vk::PipelineStageFlags compute_wait_dst_stage_mask = vk::PipelineStageFlags{vk::PipelineStageFlagBits::eComputeShader};
-    uint64_t wait_semaphore_value = g_compute_complete_count;
-    uint64_t signal_semaphore_value = ++g_compute_complete_count;
-    vk::TimelineSemaphoreSubmitInfo compute_semaphore_submit_info{
-      .waitSemaphoreValueCount = 1,
-      .pWaitSemaphoreValues = &wait_semaphore_value,
-      .signalSemaphoreValueCount = 1,
-      .pSignalSemaphoreValues = &signal_semaphore_value,
-    };
-    vk::SubmitInfo compute_submit_info{
-      .pNext = &compute_semaphore_submit_info,
-      .waitSemaphoreCount = 1,
-      .pWaitSemaphores = &*g_compute_complete_semaphore,
-      .pWaitDstStageMask = &compute_wait_dst_stage_mask,
-      .commandBufferCount = 1,
-      .pCommandBuffers = &*g_command_buffer[compute_cb_index],
-      .signalSemaphoreCount = 1,
-      .pSignalSemaphores = &*g_compute_complete_semaphore,
-    };
-    g_queue.submit(compute_submit_info,nullptr);
-    
-    uint32_t render_cb_index = frame_index+g_swapchain_images.size();
-    g_command_buffer[render_cb_index].begin({});
-    vk::RenderingAttachmentInfo attachment_info{
-      .imageView = g_color_image_view,
-      .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-      .resolveMode = vk::ResolveModeFlagBits::eAverage,
-      .resolveImageView = g_swapchain_image_views[image_index],
-      .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-      .loadOp = vk::AttachmentLoadOp::eLoad,
-      .storeOp = vk::AttachmentStoreOp::eStore,
-      .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 1.0f}
-    };
-    vk::RenderingAttachmentInfo depth_info{
-      .imageView = g_depth_image_view,
-      .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-      .loadOp = vk::AttachmentLoadOp::eLoad,
       .storeOp = vk::AttachmentStoreOp::eDontCare,
       .clearValue = vk::ClearDepthStencilValue{1.0f, 0}
     };
@@ -1456,17 +1357,51 @@ namespace {
       .pColorAttachments = &attachment_info,
       .pDepthAttachment = &depth_info
     };
-    g_command_buffer[render_cb_index].beginRendering(rendering_info);
-    g_command_buffer[render_cb_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_particle_pipeline);
-    g_command_buffer[render_cb_index].bindVertexBuffers(0, *g_particle_buffer[g_swapchain_images.size()-1], {0});
-    g_command_buffer[render_cb_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_particle_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
-    g_command_buffer[render_cb_index].setViewport(0, viewport);
-    g_command_buffer[render_cb_index].setScissor(0, scissor);
-    g_command_buffer[render_cb_index].draw(kParticleCount,1,0,0);
-    g_command_buffer[render_cb_index].endRendering();
+    g_command_buffer[frame_index].beginRendering(rendering_info);
+    // graphsic pass
+    g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_graphics_pipeline);
+    g_command_buffer[frame_index].bindVertexBuffers(0, *g_vertex_buffer, {0});
+    g_command_buffer[frame_index].bindIndexBuffer(*g_index_buffer, 0, vk::IndexType::eUint32);
+    g_command_buffer[frame_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
+    g_command_buffer[frame_index].setViewport(0, viewport);
+    g_command_buffer[frame_index].setScissor(0, scissor);
+    g_command_buffer[frame_index].drawIndexed(g_index_in.size(),1,0,0,0);
+    // barrier
+    std::vector<vk::ImageMemoryBarrier2> barriers={
+      {
+        .srcStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests|
+                        vk::PipelineStageFlagBits2::eLateFragmentTests,
+        .srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests|
+                        vk::PipelineStageFlagBits2::eLateFragmentTests,
+        .dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead|
+                         vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = g_depth_image,
+        .subresourceRange = {
+          .aspectMask = vk::ImageAspectFlagBits::eDepth,
+          .baseMipLevel = 0,
+          .levelCount = 1,
+          .baseArrayLayer = 0,
+          .layerCount = 1
+        }
+      }
+    };
+    vk::DependencyInfo dependency_info{
+      .dependencyFlags = vk::DependencyFlagBits::eByRegion,
+      .imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size()),
+      .pImageMemoryBarriers = barriers.data(),
+    };
+    g_command_buffer[frame_index].pipelineBarrier2(dependency_info);
+    // particle pass
+    g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_particle_pipeline);
+    g_command_buffer[frame_index].bindVertexBuffers(0, *g_particle_buffer[g_swapchain_images.size()-1], {0});
+    g_command_buffer[frame_index].draw(kParticleCount,1,0,0);
+    g_command_buffer[frame_index].endRendering();
     TransformImageLayout(
       image_index,
-      render_cb_index,
+      frame_index,
       vk::ImageLayout::eColorAttachmentOptimal,
       vk::ImageLayout::ePresentSrcKHR,
       vk::AccessFlagBits2::eColorAttachmentWrite,
@@ -1474,30 +1409,20 @@ namespace {
       vk::PipelineStageFlagBits2::eColorAttachmentOutput,
       vk::PipelineStageFlagBits2::eBottomOfPipe
     );
-    g_command_buffer[render_cb_index].end();
-    vk::PipelineStageFlags graphics_wait_dst_stage_mask =  
-      vk::PipelineStageFlagBits::eEarlyFragmentTests | 
-      vk::PipelineStageFlagBits::eLateFragmentTests |
-      vk::PipelineStageFlagBits::eColorAttachmentOutput |
-      vk::PipelineStageFlagBits::eVertexInput;
-    std::vector<uint64_t>wait_values{signal_semaphore_value,1};
-    vk::TimelineSemaphoreSubmitInfo graphics_semaphore_submit_info{
-      .waitSemaphoreValueCount = 2,
-      .pWaitSemaphoreValues = wait_values.data(),
-      .signalSemaphoreValueCount = 0,
+    g_command_buffer[frame_index].end();
+  }
+  void CreateSyncObjects(){
+    uint32_t image_count = g_swapchain_images.size();
+    for(uint32_t i=0;i<image_count;++i){
+      g_present_complete_semaphore.emplace_back(vk::raii::Semaphore(g_device, vk::SemaphoreCreateInfo()));
+      g_render_finished_semaphore.emplace_back(vk::raii::Semaphore(g_device, vk::SemaphoreCreateInfo()));
+      g_draw_fence.emplace_back(vk::raii::Fence(g_device, {.flags = vk::FenceCreateFlagBits::eSignaled}));
+    }
+    vk::SemaphoreTypeCreateInfo timeline_type_info{
+      .semaphoreType = vk::SemaphoreType::eTimeline,
+      .initialValue = 0,
     };
-    std::vector<vk::Semaphore> graphics_wait_semaphores{*g_compute_complete_semaphore,*g_render_finished_semaphore[frame_index]};
-    vk::SubmitInfo graphics_submit_info{
-      .pNext = &graphics_semaphore_submit_info,
-      .waitSemaphoreCount = 2,
-      .pWaitSemaphores = graphics_wait_semaphores.data(),
-      .pWaitDstStageMask = &graphics_wait_dst_stage_mask,
-      .commandBufferCount = 1,
-      .pCommandBuffers = &*g_command_buffer[render_cb_index],
-      .signalSemaphoreCount = 1,
-      .pSignalSemaphores = &*g_render_particle_finished_semaphore[frame_index],
-    };
-    g_queue.submit(graphics_submit_info, nullptr);
+    g_particle_compute_semaphore = vk::raii::Semaphore(g_device, {.pNext = &timeline_type_info});
   }
   void RecreateSwapchain(){
     int width = 0, height = 0;
@@ -1547,9 +1472,9 @@ class TriangleRhi{
     g_device.waitIdle();
   }
   bool Tick(){
-    return UpdateDate()&&DrawFrame();
+    return CpuPrepareData()&&GpuPrepareData()&&DrawFrame();
   }
-  bool UpdateDate(){
+  bool CpuPrepareData(){
     UniformBufferObject ubo;
     glm::vec3 camera_pos{1.0f,1.0f,1.0f};
     ubo.modu = glm::rotate<float>(glm::mat4(1.0f),(m_current_time-m_start_time)*glm::radians(10.0f),glm::vec3(0.0f,0.0f,1.0f));
@@ -1561,6 +1486,48 @@ class TriangleRhi{
     ubo.light.intensities = glm::vec3(10.0f,10.0f,10.0f);
     ubo.camera_pos = camera_pos;
     memcpy(g_ubo_buffer_maped[m_frame_index], &ubo, sizeof(ubo));
+    return true;
+  }
+  void UpdateParticle(){
+    ParticleUbo ubo;
+    static double last_particle_update_time = 0.0f;
+    if(last_particle_update_time == 0.0f){
+      last_particle_update_time = m_current_time;
+    }
+    ubo.delta_time = m_current_time - last_particle_update_time;
+    last_particle_update_time = m_current_time;
+    memcpy(g_particle_ubo_buffer_maped[m_frame_index],&ubo,sizeof(ParticleUbo));
+
+    uint32_t compute_cb_index = m_frame_index+g_swapchain_images.size()*2;
+    g_command_buffer[compute_cb_index].reset();
+    g_command_buffer[compute_cb_index].begin({});
+    g_command_buffer[compute_cb_index].bindPipeline(vk::PipelineBindPoint::eCompute, g_compute_pipeline);
+    g_command_buffer[compute_cb_index].bindDescriptorSets(vk::PipelineBindPoint::eCompute, g_compute_pipeline_layout,0,*g_descriptor_sets[m_frame_index],nullptr);
+    g_command_buffer[compute_cb_index].dispatch(kParticleCount/256,1,1);
+    g_command_buffer[compute_cb_index].end();
+    vk::PipelineStageFlags compute_wait_dst_stage_mask = vk::PipelineStageFlags{vk::PipelineStageFlagBits::eComputeShader};
+    uint64_t wait_semaphore_value = g_particle_compute_count;
+    uint64_t signal_semaphore_value = ++g_particle_compute_count;
+    vk::TimelineSemaphoreSubmitInfo compute_semaphore_submit_info{
+      .waitSemaphoreValueCount = 1,
+      .pWaitSemaphoreValues = &wait_semaphore_value,
+      .signalSemaphoreValueCount = 1,
+      .pSignalSemaphoreValues = &signal_semaphore_value,
+    };
+    vk::SubmitInfo compute_submit_info{
+      .pNext = &compute_semaphore_submit_info,
+      .waitSemaphoreCount = 1,
+      .pWaitSemaphores = &*g_particle_compute_semaphore,
+      .pWaitDstStageMask = &compute_wait_dst_stage_mask,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &*g_command_buffer[compute_cb_index],
+      .signalSemaphoreCount = 1,
+      .pSignalSemaphores = &*g_particle_compute_semaphore,
+    };
+    g_queue.submit(compute_submit_info,nullptr);
+  }
+  bool GpuPrepareData(){
+    UpdateParticle();
     return true;
   }
   bool DrawFrame(){
@@ -1582,10 +1549,20 @@ class TriangleRhi{
       }
     }
     RecordCommandBuffer(image_index, m_frame_index);
-    vk::PipelineStageFlags wait_dst_stage_mask = vk::PipelineStageFlags{vk::PipelineStageFlagBits::eColorAttachmentOutput};
+    vk::PipelineStageFlags wait_dst_stage_mask =  
+      vk::PipelineStageFlagBits::eColorAttachmentOutput |
+      vk::PipelineStageFlagBits::eVertexInput;
+    std::vector<uint64_t>wait_values{g_particle_compute_count,1};
+    vk::TimelineSemaphoreSubmitInfo graphics_semaphore_submit_info{
+      .waitSemaphoreValueCount = 2,
+      .pWaitSemaphoreValues = wait_values.data(),
+      .signalSemaphoreValueCount = 0,
+    };
+    std::vector<vk::Semaphore> graphics_wait_semaphores{*g_particle_compute_semaphore,*g_present_complete_semaphore[m_frame_index]};
     vk::SubmitInfo submit_info{
-      .waitSemaphoreCount = 1,
-      .pWaitSemaphores = &*g_present_complete_semaphore[m_frame_index],
+      .pNext = &graphics_semaphore_submit_info,
+      .waitSemaphoreCount = static_cast<uint32_t>(graphics_wait_semaphores.size()),
+      .pWaitSemaphores = graphics_wait_semaphores.data(),
       .pWaitDstStageMask = &wait_dst_stage_mask,
       .commandBufferCount = 1,
       .pCommandBuffers = &*g_command_buffer[m_frame_index],
@@ -1595,10 +1572,9 @@ class TriangleRhi{
     g_device.resetFences(*g_draw_fence[m_frame_index]);
     g_queue.submit(submit_info, *g_draw_fence[m_frame_index]);
     while(vk::Result::eTimeout == g_device.waitForFences(*g_draw_fence[m_frame_index], vk::True, UINT64_MAX));
-    DrawParticles(image_index, m_frame_index, m_current_time - m_start_time);
     const vk::PresentInfoKHR present_info{
       .waitSemaphoreCount = 1,
-      .pWaitSemaphores = &*g_render_particle_finished_semaphore[m_frame_index],
+      .pWaitSemaphores = &*g_render_finished_semaphore[m_frame_index],
       .swapchainCount = 1,
       .pSwapchains = &*g_swapchain,
       .pImageIndices = &image_index
