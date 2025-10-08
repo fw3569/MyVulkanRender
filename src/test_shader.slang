@@ -9,13 +9,16 @@ struct Light {
     float3 pos;
     float3 intensities;
 };
-// static const int shininess = 32;
 struct UniformBufferObject {
     float4x4 modu;
     float4x4 view;
     float4x4 proj;
     Light light;
     float3 camera_pos;
+    float4x4 light_view;
+    float4x4 light_proj;
+    float2 shadowmap_resolution;
+    float2 shadowmap_scale;
 };
 // [[vk::binding(1, 0)]]
 ConstantBuffer<UniformBufferObject> ubo;
@@ -67,6 +70,19 @@ float3 blinn_phong(float3 pos, float3 texture_color, float4 diffuse_specular, fl
 }
 
 [shader("vertex")]
+float4 vertShadowmap(VertexIn vertex_in) : SV_Position {
+    float4 pos = mul(ubo.light_proj, mul(ubo.light_view, mul(ubo.modu, float4(vertex_in.position, 1.0))));
+    return pos;
+}
+[shader("fragment")]
+void fragShadowmap() {
+    return;
+}
+
+[[vk::binding(9, 0)]]
+Texture2D<float32_t> shadowmap;
+
+[shader("vertex")]
 VertexOutput vertMain(VertexIn vertex_in) {
     VertexOutput output;
     float4 world_pos = mul(ubo.modu, float4(vertex_in.position, 1.0));
@@ -88,7 +104,6 @@ struct Gbuffer {
 Gbuffer fragMain(VertexOutput vertex) {
     float4 texture_color = texture.Sample(vertex.tex_coord);
     if (texture_color.a < 0.1) discard;
-    // return float4(blinn_phong(vertex.world_pos,texture_color.rgb,vertex.diffuse_specular,vertex.normal),texture_color.a);
     Gbuffer gbuffer;
     gbuffer.texture_color = texture_color;
     gbuffer.position = float4(vertex.world_pos,1.0f);
@@ -102,19 +117,27 @@ Gbuffer fragMain(VertexOutput vertex) {
 [[vk::input_attachment_index(7)]] SubpassInput<float4> gbuffer_normal;
 [[vk::input_attachment_index(8)]] SubpassInput<float4> gbuffer_diffuse_specular;
 [shader("vertex")]
-float4 vertLighting(int vid: SV_VertexID) : SV_Position {
+float4 vertLighting(int vid : SV_VertexID) : SV_Position {
     return float4(vid%2*2-1.0f, vid/2*2-1.0f, 0.0f, 1.0f);
 }
 [shader("fragment")]
-float4 fragLighting() : SV_Target {
+float4 fragLighting(float4 pos : SV_Position) : SV_Target {
     float4 texture_color = gbuffer_color.SubpassLoad();
     if (texture_color.a < 0.1) discard;
-    return float4(blinn_phong(gbuffer_position.SubpassLoad().xyz,texture_color.rgb,gbuffer_diffuse_specular.SubpassLoad(),gbuffer_normal.SubpassLoad().xyz),texture_color.a);
+    float3 world_pos = gbuffer_position.SubpassLoad().xyz;
+    float4 outlight = float4(blinn_phong(world_pos, texture_color.rgb, gbuffer_diffuse_specular.SubpassLoad(), gbuffer_normal.SubpassLoad().xyz), texture_color.a);
+    float4 light_space_pos = mul(ubo.light_proj, mul(ubo.light_view, float4(world_pos, 1.0f)));
+    light_space_pos = light_space_pos / float4(light_space_pos.w);
+    light_space_pos.xy = (light_space_pos.xy + 1.0f) / 2.0f * ubo.shadowmap_resolution;
+    if (light_space_pos.x >= 0 && light_space_pos.x < ubo.shadowmap_resolution.x && light_space_pos.y >= 0 && light_space_pos.y < ubo.shadowmap_resolution.y && shadowmap[int2(light_space_pos.xy)] + 1e-2 < light_space_pos.z) {
+        return outlight * 0.2f;
+    }
+    return outlight;
 }
 
 [shader("compute")]
 [numthreads(256,1,1)]
-void compParticle(uint3 thread_id: SV_DispatchThreadID) {
+void compParticle(uint3 thread_id : SV_DispatchThreadID) {
     particle_out[thread_id.x].pos = particle_in[thread_id.x].pos + particle_ubo.delta_time * particle_in[thread_id.x].v;
     particle_out[thread_id.x].color = particle_in[thread_id.x].color;
 }

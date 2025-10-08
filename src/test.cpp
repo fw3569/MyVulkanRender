@@ -101,6 +101,10 @@ namespace {
     };
     alignas(16) Light light;
     alignas(16) glm::vec3 camera_pos;
+    alignas(16) glm::mat4 light_view;
+    alignas(16) glm::mat4 light_proj;
+    alignas(8) glm::vec2 shadowmap_resolution;
+    alignas(8) glm::vec2 shadowmap_scale;
   };
 
   struct Particle{
@@ -159,6 +163,7 @@ namespace {
   vk::raii::Pipeline g_graphics_pipeline = nullptr;
   vk::raii::PipelineLayout g_lighting_pipeline_layout = nullptr;
   vk::raii::Pipeline g_lighting_pipeline = nullptr;
+  uint32_t g_frame_in_flight = 2;
   std::vector<vk::Image> g_swapchain_images;
   std::vector<vk::raii::ImageView> g_swapchain_image_views;
   vk::raii::Image g_color_image = nullptr;
@@ -217,6 +222,14 @@ namespace {
   std::vector<vk::raii::DeviceMemory> g_particle_buffer_memory;
   static uint64_t g_particle_compute_count = 0;
   vk::raii::Semaphore g_particle_compute_semaphore = nullptr;
+  vk::raii::PipelineLayout g_shadowmap_pipeline_layout = nullptr;
+  vk::raii::Pipeline g_shadowmap_pipeline = nullptr;
+  vk::Format g_shadowmap_image_format = vk::Format::eD32Sfloat;
+  vk::raii::Image g_shadowmap_image = nullptr;
+  vk::raii::DeviceMemory g_shadowmap_image_memory  = nullptr;
+  vk::raii::ImageView g_shadowmap_image_view = nullptr;
+  uint32_t g_shadowmap_width = 1600;
+  uint32_t g_shadowmap_height = 1200;
 
   const std::vector kValidationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -254,6 +267,7 @@ namespace {
   void CreateImageViews();
   void CreateColorResources();
   void CreateDepthResources();
+  void CreateShadowmapResources();
   void CreateGbufferResources();
   void CreateDescriptorSetLayout();
   void CreatePipelines();
@@ -283,6 +297,7 @@ namespace {
     CreateImageViews();
     CreateColorResources();
     CreateDepthResources();
+    CreateShadowmapResources();
     CreateGbufferResources();
     CreateDescriptorSetLayout();
     CreatePipelines();
@@ -502,6 +517,7 @@ namespace {
     };
     g_swapchain = vk::raii::SwapchainKHR(g_device,swapchain_create_info);
     g_swapchain_images = g_swapchain.getImages();
+    g_frame_in_flight = g_swapchain_images.size();
     g_swapchain_image_format = select_format.format;
     g_swapchain_extent=select_extent;
   }
@@ -602,6 +618,13 @@ namespace {
       {
         .binding = 8,
         .descriptorType = vk::DescriptorType::eInputAttachment,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .pImmutableSamplers = nullptr
+      },
+      {
+        .binding = 9,
+        .descriptorType = vk::DescriptorType::eSampledImage,
         .descriptorCount = 1,
         .stageFlags = vk::ShaderStageFlagBits::eFragment,
         .pImmutableSamplers = nullptr
@@ -787,6 +810,44 @@ namespace {
     lighting_pipeline_info.pDepthStencilState = &lighting_depth_stencil_info;
     lighting_pipeline_info.layout = g_lighting_pipeline_layout;
     g_lighting_pipeline = vk::raii::Pipeline(g_device, nullptr, lighting_pipeline_info);
+
+    vk::GraphicsPipelineCreateInfo shodowmap_pipeline_info = pipeline_info;
+    vk::PipelineRenderingCreateInfo shodowmap_pipeline_rending_info{
+      .colorAttachmentCount = 0,
+      .depthAttachmentFormat = g_shadowmap_image_format,
+    };
+    vk::PipelineShaderStageCreateInfo shodowmap_pipeline_shader_stage_create_info[2] = {
+      {
+        .stage = vk::ShaderStageFlagBits::eVertex,
+        .module = shader_module,
+        .pName = "vertShadowmap",
+        .pSpecializationInfo = nullptr
+      },
+      {
+        .stage = vk::ShaderStageFlagBits::eFragment,
+        .module = shader_module,
+        .pName = "fragShadowmap",
+        .pSpecializationInfo = nullptr
+      }
+    };
+    vk::PipelineRasterizationStateCreateInfo shadowmap_rasterization_create_info{
+      .depthClampEnable = vk::False,
+      .rasterizerDiscardEnable = vk::False,
+      .polygonMode = vk::PolygonMode::eFill,
+      .cullMode = vk::CullModeFlagBits::eNone,
+      .frontFace = vk::FrontFace::eClockwise,
+      .depthBiasEnable = vk::False,
+      .depthBiasConstantFactor = 1.0f,
+      .depthBiasClamp = 0.0f,
+      .depthBiasSlopeFactor = 0.0f,
+      .lineWidth =1.0f 
+    };
+    g_shadowmap_pipeline_layout = vk::raii::PipelineLayout(g_device, pipeline_layout_info);
+    shodowmap_pipeline_info.pNext = &shodowmap_pipeline_rending_info;
+    shodowmap_pipeline_info.pStages = shodowmap_pipeline_shader_stage_create_info;
+    shodowmap_pipeline_info.pRasterizationState = &shadowmap_rasterization_create_info;
+    shodowmap_pipeline_info.layout = g_shadowmap_pipeline_layout;
+    g_shadowmap_pipeline = vk::raii::Pipeline(g_device, nullptr, shodowmap_pipeline_info);
 
     vk::GraphicsPipelineCreateInfo particle_pipeline_info = pipeline_info;
     g_particle_pipeline_layout = vk::raii::PipelineLayout(g_device, pipeline_layout_info);
@@ -977,7 +1038,7 @@ namespace {
     g_ubo_buffer_memory.clear();
     g_ubo_buffer_maped.clear();
 
-    for(uint32_t i=0;i<g_swapchain_images.size();++i){
+    for(uint32_t i=0;i<g_frame_in_flight;++i){
       uint32_t size = sizeof(UniformBufferObject);
       vk::raii::Buffer buffer = nullptr;
       vk::raii::DeviceMemory memory = nullptr;
@@ -1003,7 +1064,7 @@ namespace {
     g_particle_buffer_memory.clear();
 
     uint32_t size = sizeof(ParticleUbo);
-    for(uint32_t i=0;i<g_swapchain_images.size();++i){
+    for(uint32_t i=0;i<g_frame_in_flight;++i){
       vk::raii::Buffer buffer = nullptr;
       vk::raii::DeviceMemory memory = nullptr;
       CreateBuffer(
@@ -1040,47 +1101,44 @@ namespace {
     void* data = temp_memory.mapMemory(0, size);
     memcpy(data,particles.data(),size);
     temp_memory.unmapMemory();
-    CopyBuffer(temp_buffer,g_particle_buffer[g_swapchain_images.size()-1],size);
+    CopyBuffer(temp_buffer,g_particle_buffer[g_frame_in_flight-1],size);
   }
   void CreateDescriptorPool(){
-    uint32_t frame_size = g_swapchain_images.size();
     std::vector<vk::DescriptorPoolSize> pool_sizes{
       {
         .type=vk::DescriptorType::eUniformBuffer,
-        .descriptorCount=frame_size*2
+        .descriptorCount=g_frame_in_flight*2
       },
       {
         .type=vk::DescriptorType::eCombinedImageSampler,
-        .descriptorCount=frame_size
+        .descriptorCount=g_frame_in_flight
       },
       {
         .type=vk::DescriptorType::eStorageBuffer,
-        .descriptorCount=frame_size*2
+        .descriptorCount=g_frame_in_flight*2
       },
       {
         .type=vk::DescriptorType::eInputAttachment,
-        .descriptorCount=frame_size*4
+        .descriptorCount=g_frame_in_flight*4
+      },
+      {
+        .type=vk::DescriptorType::eSampledImage,
+        .descriptorCount=g_frame_in_flight
       }
     };
     vk::DescriptorPoolCreateInfo descriptor_pool_info{
       .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-      .maxSets = static_cast<uint32_t>(g_swapchain_images.size()*pool_sizes.size()),
+      .maxSets = static_cast<uint32_t>(g_frame_in_flight*pool_sizes.size()),
       .poolSizeCount = static_cast<uint32_t>(pool_sizes.size()),
       .pPoolSizes = pool_sizes.data(),
     };
     g_descriptor_pool = vk::raii::DescriptorPool(g_device,descriptor_pool_info);
   }
-  void CreateDescriptorSets(){
-    uint32_t frame_count = g_swapchain_images.size();
-    std::vector<vk::DescriptorSetLayout> layouts(frame_count, *g_descriptor_set_layout);
-    vk::DescriptorSetAllocateInfo alloc_info{
-      .descriptorPool = *g_descriptor_pool, .descriptorSetCount = static_cast<uint32_t>(layouts.size()), .pSetLayouts = layouts.data()
-    };
-    g_descriptor_sets = g_device.allocateDescriptorSets(alloc_info);
-    for(uint32_t i=0;i<frame_count;++i){
+  void UpdateDescriptorSets(){
+    for(uint32_t i=0;i<g_frame_in_flight;++i){
       vk::DescriptorBufferInfo buffer_info{.buffer = g_ubo_buffer[i], .offset = 0, .range = sizeof(UniformBufferObject)};
       vk::DescriptorBufferInfo particle_ubo_buffer_info{.buffer = g_particle_ubo_buffer[i], .offset = 0, .range = sizeof(ParticleUbo)};
-      vk::DescriptorBufferInfo particle_last_frame_buffer_info{.buffer = g_particle_buffer[(i-1+frame_count)%frame_count], .offset = 0, .range = sizeof(Particle)*kParticleCount};
+      vk::DescriptorBufferInfo particle_last_frame_buffer_info{.buffer = g_particle_buffer[(i-1+g_frame_in_flight)%g_frame_in_flight], .offset = 0, .range = sizeof(Particle)*kParticleCount};
       vk::DescriptorBufferInfo particle_this_frame_buffer_info{.buffer = g_particle_buffer[i], .offset = 0, .range = sizeof(Particle)*kParticleCount};
       vk::DescriptorImageInfo image_info{
         .sampler = *g_texture_image_sampler,
@@ -1101,6 +1159,10 @@ namespace {
       };
       vk::DescriptorImageInfo gbuffer_diffuse_specular_info{
         .imageView = *g_gbuffer_diffuse_specular_image_view,
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+      };
+      vk::DescriptorImageInfo shadowmap_info{
+        .imageView = *g_shadowmap_image_view,
         .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
       };
       std::vector<vk::WriteDescriptorSet> descriptor_write{
@@ -1175,10 +1237,26 @@ namespace {
           .descriptorCount = 1,
           .descriptorType = vk::DescriptorType::eInputAttachment,
           .pImageInfo = &gbuffer_diffuse_specular_info
+        },
+        {
+          .dstSet = g_descriptor_sets[i],
+          .dstBinding = 9,
+          .dstArrayElement = 0,
+          .descriptorCount = 1,
+          .descriptorType = vk::DescriptorType::eSampledImage,
+          .pImageInfo = &shadowmap_info
         }
       };
       g_device.updateDescriptorSets(descriptor_write, {});
     }
+  }
+  void CreateDescriptorSets(){
+    std::vector<vk::DescriptorSetLayout> layouts(g_frame_in_flight, *g_descriptor_set_layout);
+    vk::DescriptorSetAllocateInfo alloc_info{
+      .descriptorPool = *g_descriptor_pool, .descriptorSetCount = static_cast<uint32_t>(layouts.size()), .pSetLayouts = layouts.data()
+    };
+    g_descriptor_sets = g_device.allocateDescriptorSets(alloc_info);
+    UpdateDescriptorSets();
   }
   void TransitionImageLayout(vk::raii::Image& image, uint32_t mip_levels, vk::ImageLayout  old_layout, vk::ImageLayout new_layout){
     vk::raii::CommandBuffer command_buffer = BeginOneTimeCommandBuffer();
@@ -1409,6 +1487,16 @@ namespace {
     );
     g_depth_image_view = CreateImageView(*g_depth_image,1,g_depth_image_format,vk::ImageAspectFlagBits::eDepth);
   }
+  void CreateShadowmapResources(){
+    CreateImage(
+      g_shadowmap_width,g_shadowmap_height,1,vk::SampleCountFlagBits::e1,g_shadowmap_image_format,vk::ImageTiling::eOptimal,
+      vk::ImageUsageFlagBits::eDepthStencilAttachment|
+      vk::ImageUsageFlagBits::eSampled,
+      vk::MemoryPropertyFlagBits::eDeviceLocal,
+      g_shadowmap_image,g_shadowmap_image_memory
+    );
+    g_shadowmap_image_view = CreateImageView(*g_shadowmap_image,1,g_shadowmap_image_format,vk::ImageAspectFlagBits::eDepth);
+  }
   void CreateGbufferResources(){
     vk::Format format = g_gbuffer_format;
     // dont use msaa if using deferred lighting
@@ -1456,7 +1544,7 @@ namespace {
     vk::CommandBufferAllocateInfo alloc_info{
       .commandPool = g_command_pool,
       .level = vk::CommandBufferLevel::ePrimary,
-      .commandBufferCount = static_cast<uint32_t>(g_swapchain_images.size())*3
+      .commandBufferCount = static_cast<uint32_t>(g_frame_in_flight)*3
     };
     g_command_buffer = vk::raii::CommandBuffers(g_device, alloc_info);
   }
@@ -1535,7 +1623,7 @@ namespace {
     uint32_t image_index,
     uint32_t frame_index,
     vk::Viewport viewport = vk::Viewport(0.0f, 0.0f, static_cast<float>(g_swapchain_extent.width),static_cast<float>(g_swapchain_extent.height), 0.0f, 1.0f),
-    vk::Rect2D scissor = vk::Rect2D(vk::Offset2D(0,0), g_swapchain_extent)){
+    vk::Rect2D scissor = vk::Rect2D({0,0}, g_swapchain_extent)){
     g_command_buffer[frame_index].begin({});
     TransformImageLayout(
       image_index,
@@ -1613,8 +1701,39 @@ namespace {
       .pColorAttachments = attachment_infos.data(),
       .pDepthAttachment = &depth_info
     };
-    g_command_buffer[frame_index].beginRendering(rendering_info);
+    // shadowmap pass
+    TransformImageLayoutCustom(g_shadowmap_image, frame_index, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal, {}, vk::AccessFlagBits2::eDepthStencilAttachmentRead|vk::AccessFlagBits2::eDepthStencilAttachmentWrite, vk::PipelineStageFlagBits2::eTopOfPipe, vk::PipelineStageFlagBits2::eEarlyFragmentTests|vk::PipelineStageFlagBits2::eLateFragmentTests, vk::ImageAspectFlagBits::eDepth);
+    vk::RenderingAttachmentInfo shadowmap_depth_info{
+      .imageView = g_shadowmap_image_view,
+      .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+      .loadOp = vk::AttachmentLoadOp::eClear,
+      .storeOp = vk::AttachmentStoreOp::eStore,
+      .clearValue = vk::ClearDepthStencilValue{1.0f, 0}
+    };
+    vk::RenderingInfo shadowmap_rendering_info{
+      .renderArea = {
+        .offset = {0, 0},
+        .extent = {g_shadowmap_width, g_shadowmap_height}
+      },
+      .layerCount = 1,
+      .colorAttachmentCount = 0,
+      .pColorAttachments = nullptr,
+      .pDepthAttachment = &shadowmap_depth_info
+    };
+    vk::Viewport shadermap_viewport = vk::Viewport(0.0f, 0.0f, static_cast<float>(g_shadowmap_width),static_cast<float>(g_shadowmap_height), 0.0f, 1.0f);
+    vk::Rect2D shadermap_scissor = vk::Rect2D({0, 0}, {g_shadowmap_width, g_shadowmap_height});
+    g_command_buffer[frame_index].beginRendering(shadowmap_rendering_info);
+    g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_shadowmap_pipeline);
+    g_command_buffer[frame_index].bindVertexBuffers(0, *g_vertex_buffer, {0});
+    g_command_buffer[frame_index].bindIndexBuffer(*g_index_buffer, 0, vk::IndexType::eUint32);
+    g_command_buffer[frame_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_shadowmap_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
+    g_command_buffer[frame_index].setViewport(0, shadermap_viewport);
+    g_command_buffer[frame_index].setScissor(0, shadermap_scissor);
+    g_command_buffer[frame_index].drawIndexed(g_index_in.size(),1,0,0,0);
+    g_command_buffer[frame_index].endRendering();
     // graphsic pass
+    TransformImageLayoutCustom(g_shadowmap_image, frame_index, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthReadOnlyOptimal, vk::AccessFlagBits2::eDepthStencilAttachmentRead|vk::AccessFlagBits2::eDepthStencilAttachmentWrite, vk::AccessFlagBits2::eDepthStencilAttachmentRead, vk::PipelineStageFlagBits2::eEarlyFragmentTests|vk::PipelineStageFlagBits2::eLateFragmentTests, vk::PipelineStageFlagBits2::eFragmentShader, vk::ImageAspectFlagBits::eDepth);
+    g_command_buffer[frame_index].beginRendering(rendering_info);
     g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_graphics_pipeline);
     g_command_buffer[frame_index].bindVertexBuffers(0, *g_vertex_buffer, {0});
     g_command_buffer[frame_index].bindIndexBuffer(*g_index_buffer, 0, vk::IndexType::eUint32);
@@ -1629,6 +1748,7 @@ namespace {
       .pColorAttachmentLocations = lighting_attachment_locations.data(),
     });
     g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_lighting_pipeline);
+    g_command_buffer[frame_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_lighting_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
     g_command_buffer[frame_index].draw(4,1,0,0);
     // barrier
     std::vector<vk::ImageMemoryBarrier2> barriers={
@@ -1662,7 +1782,8 @@ namespace {
     g_command_buffer[frame_index].pipelineBarrier2(dependency_info);
     // particle pass
     g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_particle_pipeline);
-    g_command_buffer[frame_index].bindVertexBuffers(0, *g_particle_buffer[g_swapchain_images.size()-1], {0});
+    g_command_buffer[frame_index].bindVertexBuffers(0, *g_particle_buffer[g_frame_in_flight-1], {0});
+    g_command_buffer[frame_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_particle_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
     g_command_buffer[frame_index].draw(kParticleCount,1,0,0);
     g_command_buffer[frame_index].endRendering();
     TransformImageLayout(
@@ -1678,8 +1799,7 @@ namespace {
     g_command_buffer[frame_index].end();
   }
   void CreateSyncObjects(){
-    uint32_t image_count = g_swapchain_images.size();
-    for(uint32_t i=0;i<image_count;++i){
+    for(uint32_t i=0;i<g_frame_in_flight;++i){
       g_present_complete_semaphore.emplace_back(vk::raii::Semaphore(g_device, vk::SemaphoreCreateInfo()));
       g_render_finished_semaphore.emplace_back(vk::raii::Semaphore(g_device, vk::SemaphoreCreateInfo()));
       g_draw_fence.emplace_back(vk::raii::Fence(g_device, {.flags = vk::FenceCreateFlagBits::eSignaled}));
@@ -1705,6 +1825,9 @@ namespace {
     CreateImageViews();
     CreateColorResources();
     CreateDepthResources();
+    CreateShadowmapResources();
+    CreateGbufferResources();
+    UpdateDescriptorSets();
   }
   void FramebufferSizeCallback(GLFWwindow* /* window */, int /* width */, int /* height */){
     g_window_resized = true;
@@ -1751,6 +1874,10 @@ class TriangleRhi{
     ubo.light.pos = glm::vec3(1.0f,0.0f,2.0f);
     ubo.light.intensities = glm::vec3(10.0f,10.0f,10.0f);
     ubo.camera_pos = camera_pos;
+    ubo.light_view = glm::lookAt(ubo.light.pos,glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,-1.0f));
+    ubo.light_proj = glm::perspective<float>(glm::radians(90.0f),static_cast<float>(g_shadowmap_width) / static_cast<float>(g_shadowmap_height), 0.8f, 3.0f);
+    ubo.shadowmap_resolution = glm::vec2(g_shadowmap_width, g_shadowmap_height);
+    ubo.shadowmap_scale = glm::vec2(g_shadowmap_width/(float)g_swapchain_extent.width,g_shadowmap_height/(float)g_swapchain_extent.height);
     memcpy(g_ubo_buffer_maped[m_frame_index], &ubo, sizeof(ubo));
     return true;
   }
@@ -1764,7 +1891,7 @@ class TriangleRhi{
     last_particle_update_time = m_current_time;
     memcpy(g_particle_ubo_buffer_maped[m_frame_index],&ubo,sizeof(ParticleUbo));
 
-    uint32_t compute_cb_index = m_frame_index+g_swapchain_images.size()*2;
+    uint32_t compute_cb_index = m_frame_index+g_frame_in_flight*2;
     g_command_buffer[compute_cb_index].reset();
     g_command_buffer[compute_cb_index].begin({});
     g_command_buffer[compute_cb_index].bindPipeline(vk::PipelineBindPoint::eCompute, g_compute_pipeline);
@@ -1797,10 +1924,6 @@ class TriangleRhi{
     return true;
   }
   bool DrawFrame(){
-    static uint32_t kFrameCount = 0;
-    if(kFrameCount==0){
-      kFrameCount = g_swapchain_images.size();
-    }
     auto [result, image_index] = g_swapchain.acquireNextImage(UINT64_MAX, *g_present_complete_semaphore[m_frame_index], nullptr);
     bool window_resized = false;
     if(result!=vk::Result::eSuccess){
@@ -1846,7 +1969,7 @@ class TriangleRhi{
       .pImageIndices = &image_index
     };
     result = g_queue.presentKHR(present_info);
-    m_frame_index = (m_frame_index+1)%kFrameCount;
+    m_frame_index = (m_frame_index+1)%g_frame_in_flight;
     if(result!=vk::Result::eSuccess){
       LOG("presentKHR: "+to_string(result));
       if(result==vk::Result::eErrorOutOfDateKHR||
