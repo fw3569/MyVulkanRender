@@ -143,7 +143,8 @@ namespace {
     vk::KHRSwapchainExtensionName,
     vk::KHRSpirv14ExtensionName,
     vk::KHRSynchronization2ExtensionName,
-    vk::KHRCreateRenderpass2ExtensionName
+    vk::KHRCreateRenderpass2ExtensionName,
+    vk::KHRDynamicRenderingLocalReadExtensionName
   };
   vk::raii::PhysicalDevice g_physical_device = nullptr;
   vk::raii::Device g_device = nullptr;
@@ -152,9 +153,12 @@ namespace {
   vk::raii::SurfaceKHR g_surface = nullptr;
   vk::raii::SwapchainKHR g_swapchain = nullptr;
   vk::Format g_swapchain_image_format = vk::Format::eUndefined;
+  vk::Format g_gbuffer_format = vk::Format::eR32G32B32A32Sfloat;
   vk::Extent2D g_swapchain_extent;
   vk::raii::PipelineLayout g_pipeline_layout = nullptr;
   vk::raii::Pipeline g_graphics_pipeline = nullptr;
+  vk::raii::PipelineLayout g_lighting_pipeline_layout = nullptr;
+  vk::raii::Pipeline g_lighting_pipeline = nullptr;
   std::vector<vk::Image> g_swapchain_images;
   std::vector<vk::raii::ImageView> g_swapchain_image_views;
   vk::raii::Image g_color_image = nullptr;
@@ -178,6 +182,18 @@ namespace {
   vk::raii::Image g_depth_image = nullptr;
   vk::raii::DeviceMemory g_depth_image_memory  = nullptr;
   vk::raii::ImageView g_depth_image_view = nullptr;
+  vk::raii::Image g_gbuffer_color_image = nullptr;
+  vk::raii::DeviceMemory g_gbuffer_color_image_memory  = nullptr;
+  vk::raii::ImageView g_gbuffer_color_image_view = nullptr;
+  vk::raii::Image g_gbuffer_position_image = nullptr;
+  vk::raii::DeviceMemory g_gbuffer_position_image_memory  = nullptr;
+  vk::raii::ImageView g_gbuffer_position_image_view = nullptr;
+  vk::raii::Image g_gbuffer_normal_image = nullptr;
+  vk::raii::DeviceMemory g_gbuffer_normal_image_memory  = nullptr;
+  vk::raii::ImageView g_gbuffer_normal_image_view = nullptr;
+  vk::raii::Image g_gbuffer_diffuse_specular_image = nullptr;
+  vk::raii::DeviceMemory g_gbuffer_diffuse_specular_image_memory  = nullptr;
+  vk::raii::ImageView g_gbuffer_diffuse_specular_image_view = nullptr;
   vk::Format g_depth_image_format = vk::Format::eUndefined;
   vk::raii::CommandPool g_command_pool = nullptr;
   std::vector<vk::raii::CommandBuffer> g_command_buffer;
@@ -201,6 +217,7 @@ namespace {
   std::vector<vk::raii::DeviceMemory> g_particle_buffer_memory;
   static uint64_t g_particle_compute_count = 0;
   vk::raii::Semaphore g_particle_compute_semaphore = nullptr;
+
   const std::vector kValidationLayers = {
     "VK_LAYER_KHRONOS_validation"
   };
@@ -237,6 +254,7 @@ namespace {
   void CreateImageViews();
   void CreateColorResources();
   void CreateDepthResources();
+  void CreateGbufferResources();
   void CreateDescriptorSetLayout();
   void CreatePipelines();
   void CreateCommandPool();
@@ -265,6 +283,7 @@ namespace {
     CreateImageViews();
     CreateColorResources();
     CreateDepthResources();
+    CreateGbufferResources();
     CreateDescriptorSetLayout();
     CreatePipelines();
     CreateCommandPool();
@@ -389,7 +408,7 @@ namespace {
     if (found == false) {
       throw std::runtime_error("failed to find a suitable GPU!");
     }
-    g_msaa_samples = GetMaxUsableSampleCount();
+    // g_msaa_samples = GetMaxUsableSampleCount();
     LOG("using physical device: ", g_physical_device.getProperties().deviceName);
   }
   void CreateLogicalDevice(){
@@ -418,7 +437,7 @@ namespace {
       {.dynamicRenderingLocalRead = true}
     };
     vk::DeviceCreateInfo device_create_info{
-      .pNext = feature_chain.get<vk::PhysicalDeviceFeatures2>(),
+      .pNext = &feature_chain.get<vk::PhysicalDeviceFeatures2>(),
       .queueCreateInfoCount = 1,
       .pQueueCreateInfos = &device_queue_create_info,
       .enabledExtensionCount = static_cast<uint32_t>(kRequiredDeviceExtensions.size()),
@@ -558,6 +577,34 @@ namespace {
         .descriptorCount = 1,
         .stageFlags = vk::ShaderStageFlagBits::eCompute,
         .pImmutableSamplers = nullptr
+      },
+      {
+        .binding = 5,
+        .descriptorType = vk::DescriptorType::eInputAttachment,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .pImmutableSamplers = nullptr
+      },
+      {
+        .binding = 6,
+        .descriptorType = vk::DescriptorType::eInputAttachment,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .pImmutableSamplers = nullptr
+      },
+      {
+        .binding = 7,
+        .descriptorType = vk::DescriptorType::eInputAttachment,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .pImmutableSamplers = nullptr
+      },
+      {
+        .binding = 8,
+        .descriptorType = vk::DescriptorType::eInputAttachment,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .pImmutableSamplers = nullptr
       }
     };
     vk::DescriptorSetLayoutCreateInfo set_layout_info{
@@ -583,26 +630,6 @@ namespace {
         .pName = "fragMain",
         .pSpecializationInfo = nullptr
       }
-    };
-    vk::PipelineShaderStageCreateInfo particle_pipeline_shader_stage_create_info[2] = {
-      {
-        .stage = vk::ShaderStageFlagBits::eVertex,
-        .module = shader_module,
-        .pName = "vertParticle",
-        .pSpecializationInfo = nullptr
-      },
-      {
-        .stage = vk::ShaderStageFlagBits::eFragment,
-        .module = shader_module,
-        .pName = "fragParticle",
-        .pSpecializationInfo = nullptr
-      }
-    };
-    vk::PipelineShaderStageCreateInfo compute_pipeline_shader_stage_create_info{
-      .stage = vk::ShaderStageFlagBits::eCompute,
-      .module = shader_module,
-      .pName = "compParticle",
-      .pSpecializationInfo = nullptr
     };
     std::vector dynamic_states = {
       vk::DynamicState::eViewport,
@@ -661,21 +688,16 @@ namespace {
       .depthBoundsTestEnable = vk::False,
       .stencilTestEnable = vk::False
     };
-    vk::PipelineColorBlendAttachmentState color_blend_attachment{
-      .blendEnable = vk::True,
-      .srcColorBlendFactor = vk::BlendFactor::eSrcAlpha,
-      .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
-      .colorBlendOp = vk::BlendOp::eAdd,
-      .srcAlphaBlendFactor = vk::BlendFactor::eOne,
-      .dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
-      .alphaBlendOp = vk::BlendOp::eAdd,
+    vk::PipelineColorBlendAttachmentState opaque_blend_attachment{
+      .blendEnable = vk::False,
       .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
     };
+    std::vector<vk::PipelineColorBlendAttachmentState>color_blend_attachments(5,opaque_blend_attachment);
     vk::PipelineColorBlendStateCreateInfo color_blend_info{
       .logicOpEnable = vk::False,
       .logicOp = vk::LogicOp::eCopy,
-      .attachmentCount = 1,
-      .pAttachments = &color_blend_attachment,
+      .attachmentCount = static_cast<uint32_t>(color_blend_attachments.size()),
+      .pAttachments = color_blend_attachments.data(),
       // .blendConstants = ,
     };
     vk::PipelineLayoutCreateInfo pipeline_layout_info{
@@ -685,10 +707,10 @@ namespace {
       .pPushConstantRanges = nullptr
     };
     g_pipeline_layout = vk::raii::PipelineLayout(g_device, pipeline_layout_info);
-
+    std::vector<vk::Format> graphsic_formats{g_gbuffer_format,g_gbuffer_format,g_gbuffer_format,g_gbuffer_format,g_swapchain_image_format};
     vk::PipelineRenderingCreateInfo pipeline_rending_info{
-      .colorAttachmentCount = 1,
-      .pColorAttachmentFormats = &g_swapchain_image_format,
+      .colorAttachmentCount = static_cast<uint32_t>(graphsic_formats.size()),
+      .pColorAttachmentFormats = graphsic_formats.data(),
       .depthAttachmentFormat = g_depth_image_format,
       // .stencilAttachmentFormat = ,
     };
@@ -712,9 +734,83 @@ namespace {
       // .basePipelineIndex =
     };
     g_graphics_pipeline = vk::raii::Pipeline(g_device, nullptr, pipeline_info);
+    vk::GraphicsPipelineCreateInfo lighting_pipeline_info = pipeline_info;
+    std::vector<vk::Format> lighting_formats{g_swapchain_image_format,g_gbuffer_format,g_gbuffer_format,g_gbuffer_format,g_gbuffer_format};
+    vk::PipelineRenderingCreateInfo lighting_pipeline_rending_info{
+      .colorAttachmentCount = static_cast<uint32_t>(graphsic_formats.size()),
+      .pColorAttachmentFormats = graphsic_formats.data(),
+      .depthAttachmentFormat = g_depth_image_format,
+    };
+    vk::PipelineShaderStageCreateInfo lighting_pipeline_shader_stage_create_info[2] = {
+      {
+        .stage = vk::ShaderStageFlagBits::eVertex,
+        .module = shader_module,
+        .pName = "vertLighting",
+        .pSpecializationInfo = nullptr
+      },
+      {
+        .stage = vk::ShaderStageFlagBits::eFragment,
+        .module = shader_module,
+        .pName = "fragLighting",
+        .pSpecializationInfo = nullptr
+      }
+    };
+    vk::PipelineVertexInputStateCreateInfo lighting_vertex_input_info{};
+    vk::PipelineInputAssemblyStateCreateInfo lighting_input_assembly_info{
+      .topology = vk::PrimitiveTopology::eTriangleStrip
+    };
+    vk::PipelineRasterizationStateCreateInfo lighting_rasterization_create_info{
+      .depthClampEnable = vk::False,
+      .rasterizerDiscardEnable = vk::False,
+      .polygonMode = vk::PolygonMode::eFill,
+      .cullMode = vk::CullModeFlagBits::eBack,
+      .frontFace = vk::FrontFace::eClockwise,
+      .depthBiasEnable = vk::False,
+      .depthBiasConstantFactor = 1.0f,
+      .depthBiasClamp = 0.0f,
+      .depthBiasSlopeFactor = 0.0f,
+      .lineWidth =1.0f 
+    };
+    vk::PipelineDepthStencilStateCreateInfo lighting_depth_stencil_info{
+      .depthTestEnable = vk::False,
+      .depthWriteEnable = vk::False,
+      .depthCompareOp = vk::CompareOp::eLess,
+      .depthBoundsTestEnable = vk::False,
+      .stencilTestEnable = vk::False
+    };
+    g_lighting_pipeline_layout = vk::raii::PipelineLayout(g_device, pipeline_layout_info);
+    lighting_pipeline_info.pNext = &lighting_pipeline_rending_info;
+    lighting_pipeline_info.pStages = lighting_pipeline_shader_stage_create_info;
+    lighting_pipeline_info.pVertexInputState = &lighting_vertex_input_info;
+    lighting_pipeline_info.pInputAssemblyState = &lighting_input_assembly_info;
+    lighting_pipeline_info.pRasterizationState = &lighting_rasterization_create_info;
+    lighting_pipeline_info.pDepthStencilState = &lighting_depth_stencil_info;
+    lighting_pipeline_info.layout = g_lighting_pipeline_layout;
+    g_lighting_pipeline = vk::raii::Pipeline(g_device, nullptr, lighting_pipeline_info);
 
+    vk::GraphicsPipelineCreateInfo particle_pipeline_info = pipeline_info;
     g_particle_pipeline_layout = vk::raii::PipelineLayout(g_device, pipeline_layout_info);
-    pipeline_info.pStages = particle_pipeline_shader_stage_create_info;
+    vk::PipelineRenderingCreateInfo particle_pipeline_rending_info{
+      .colorAttachmentCount = static_cast<uint32_t>(graphsic_formats.size()),
+      .pColorAttachmentFormats = graphsic_formats.data(),
+      .depthAttachmentFormat = g_depth_image_format,
+    };
+    particle_pipeline_info.pNext = &particle_pipeline_rending_info;
+    vk::PipelineShaderStageCreateInfo particle_pipeline_shader_stage_create_info[2] = {
+      {
+        .stage = vk::ShaderStageFlagBits::eVertex,
+        .module = shader_module,
+        .pName = "vertParticle",
+        .pSpecializationInfo = nullptr
+      },
+      {
+        .stage = vk::ShaderStageFlagBits::eFragment,
+        .module = shader_module,
+        .pName = "fragParticle",
+        .pSpecializationInfo = nullptr
+      }
+    };
+    particle_pipeline_info.pStages = particle_pipeline_shader_stage_create_info;
     binding_desc = Particle::GetBindingDescription();
     auto particle_attribute_desc = Particle::GetAttributeDescription();
     vk::PipelineVertexInputStateCreateInfo particle_vertex_input_info{
@@ -723,13 +819,45 @@ namespace {
       .vertexAttributeDescriptionCount = particle_attribute_desc.size(),
       .pVertexAttributeDescriptions = particle_attribute_desc.data(),
     };
-    pipeline_info.pVertexInputState = &particle_vertex_input_info;
+    particle_pipeline_info.pVertexInputState = &particle_vertex_input_info;
     input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo{
       .topology = vk::PrimitiveTopology::ePointList
     };
-    pipeline_info.pInputAssemblyState = &input_assembly_info;
-    depth_stencil_info.depthWriteEnable = vk::False;
-    g_particle_pipeline = vk::raii::Pipeline(g_device, nullptr, pipeline_info);
+    particle_pipeline_info.pInputAssemblyState = &input_assembly_info;
+    vk::PipelineDepthStencilStateCreateInfo particle_depth_stencil_info{
+      .depthTestEnable = vk::True,
+      .depthWriteEnable = vk::False,
+      .depthCompareOp = vk::CompareOp::eLess,
+      .depthBoundsTestEnable = vk::False,
+      .stencilTestEnable = vk::False
+    };
+    particle_pipeline_info.pDepthStencilState = &particle_depth_stencil_info;
+    vk::PipelineColorBlendAttachmentState transparent_blend_attachment{
+      .blendEnable = vk::True,
+      .srcColorBlendFactor = vk::BlendFactor::eSrcAlpha,
+      .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+      .colorBlendOp = vk::BlendOp::eAdd,
+      .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+      .dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+      .alphaBlendOp = vk::BlendOp::eAdd,
+      .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+    };
+    std::vector<vk::PipelineColorBlendAttachmentState>particle_color_blend_infos(5,transparent_blend_attachment);
+    vk::PipelineColorBlendStateCreateInfo particle_color_blend_info{
+      .logicOpEnable = vk::False,
+      .logicOp = vk::LogicOp::eCopy,
+      .attachmentCount = static_cast<uint32_t>(particle_color_blend_infos.size()),
+      .pAttachments = particle_color_blend_infos.data(),
+    };
+    particle_pipeline_info.pColorBlendState = &particle_color_blend_info;
+    g_particle_pipeline = vk::raii::Pipeline(g_device, nullptr, particle_pipeline_info);
+
+    vk::PipelineShaderStageCreateInfo compute_pipeline_shader_stage_create_info{
+      .stage = vk::ShaderStageFlagBits::eCompute,
+      .module = shader_module,
+      .pName = "compParticle",
+      .pSpecializationInfo = nullptr
+    };
     vk::PipelineLayoutCreateInfo compute_pipeline_layout_info{.setLayoutCount = 1, .pSetLayouts = &*g_descriptor_set_layout};
     g_compute_pipeline_layout = vk::raii::PipelineLayout(g_device, compute_pipeline_layout_info); 
     vk::ComputePipelineCreateInfo compute_pipeline_info{
@@ -928,6 +1056,10 @@ namespace {
       {
         .type=vk::DescriptorType::eStorageBuffer,
         .descriptorCount=frame_size*2
+      },
+      {
+        .type=vk::DescriptorType::eInputAttachment,
+        .descriptorCount=frame_size*4
       }
     };
     vk::DescriptorPoolCreateInfo descriptor_pool_info{
@@ -953,6 +1085,22 @@ namespace {
       vk::DescriptorImageInfo image_info{
         .sampler = *g_texture_image_sampler,
         .imageView = *g_texture_image_view, 
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+      };
+      vk::DescriptorImageInfo gbuffer_color_info{
+        .imageView = *g_gbuffer_color_image_view,
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+      };
+      vk::DescriptorImageInfo gbuffer_position_info{
+        .imageView = *g_gbuffer_position_image_view,
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+      };
+      vk::DescriptorImageInfo gbuffer_normal_info{
+        .imageView = *g_gbuffer_normal_image_view,
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+      };
+      vk::DescriptorImageInfo gbuffer_diffuse_specular_info{
+        .imageView = *g_gbuffer_diffuse_specular_image_view,
         .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
       };
       std::vector<vk::WriteDescriptorSet> descriptor_write{
@@ -995,6 +1143,38 @@ namespace {
           .descriptorCount = 1,
           .descriptorType = vk::DescriptorType::eStorageBuffer,
           .pBufferInfo = &particle_this_frame_buffer_info
+        },
+        {
+          .dstSet = g_descriptor_sets[i],
+          .dstBinding = 5,
+          .dstArrayElement = 0,
+          .descriptorCount = 1,
+          .descriptorType = vk::DescriptorType::eInputAttachment,
+          .pImageInfo = &gbuffer_color_info
+        },
+        {
+          .dstSet = g_descriptor_sets[i],
+          .dstBinding = 6,
+          .dstArrayElement = 0,
+          .descriptorCount = 1,
+          .descriptorType = vk::DescriptorType::eInputAttachment,
+          .pImageInfo = &gbuffer_position_info
+        },
+        {
+          .dstSet = g_descriptor_sets[i],
+          .dstBinding = 7,
+          .dstArrayElement = 0,
+          .descriptorCount = 1,
+          .descriptorType = vk::DescriptorType::eInputAttachment,
+          .pImageInfo = &gbuffer_normal_info
+        },
+        {
+          .dstSet = g_descriptor_sets[i],
+          .dstBinding = 8,
+          .dstArrayElement = 0,
+          .descriptorCount = 1,
+          .descriptorType = vk::DescriptorType::eInputAttachment,
+          .pImageInfo = &gbuffer_diffuse_specular_info
         }
       };
       g_device.updateDescriptorSets(descriptor_write, {});
@@ -1222,11 +1402,48 @@ namespace {
     g_depth_image_format = FindSupportDepthFormat();
     CreateImage(
       g_swapchain_extent.width,g_swapchain_extent.height,1,g_msaa_samples,g_depth_image_format,vk::ImageTiling::eOptimal,
-      vk::ImageUsageFlagBits::eDepthStencilAttachment,
+      vk::ImageUsageFlagBits::eDepthStencilAttachment|
+      vk::ImageUsageFlagBits::eTransientAttachment,
       vk::MemoryPropertyFlagBits::eDeviceLocal,
       g_depth_image,g_depth_image_memory
     );
     g_depth_image_view = CreateImageView(*g_depth_image,1,g_depth_image_format,vk::ImageAspectFlagBits::eDepth);
+  }
+  void CreateGbufferResources(){
+    vk::Format format = g_gbuffer_format;
+    // dont use msaa if using deferred lighting
+    CreateImage(
+      g_swapchain_extent.width,g_swapchain_extent.height,1,g_msaa_samples,format,vk::ImageTiling::eOptimal,vk::ImageUsageFlagBits::eTransientAttachment|
+      vk::ImageUsageFlagBits::eColorAttachment|
+      vk::ImageUsageFlagBits::eInputAttachment,
+      vk::MemoryPropertyFlagBits::eDeviceLocal,
+      g_gbuffer_color_image,g_gbuffer_color_image_memory
+    );
+    g_gbuffer_color_image_view = CreateImageView(*g_gbuffer_color_image,1,format,vk::ImageAspectFlagBits::eColor);
+    CreateImage(
+      g_swapchain_extent.width,g_swapchain_extent.height,1,g_msaa_samples,format,vk::ImageTiling::eOptimal,vk::ImageUsageFlagBits::eTransientAttachment|
+      vk::ImageUsageFlagBits::eColorAttachment|
+      vk::ImageUsageFlagBits::eInputAttachment,
+      vk::MemoryPropertyFlagBits::eDeviceLocal,
+      g_gbuffer_position_image,g_gbuffer_position_image_memory
+    );
+    g_gbuffer_position_image_view = CreateImageView(*g_gbuffer_position_image,1,format,vk::ImageAspectFlagBits::eColor);
+    CreateImage(
+      g_swapchain_extent.width,g_swapchain_extent.height,1,g_msaa_samples,format,vk::ImageTiling::eOptimal,vk::ImageUsageFlagBits::eTransientAttachment|
+      vk::ImageUsageFlagBits::eColorAttachment|
+      vk::ImageUsageFlagBits::eInputAttachment,
+      vk::MemoryPropertyFlagBits::eDeviceLocal,
+      g_gbuffer_normal_image,g_gbuffer_normal_image_memory
+    );
+    g_gbuffer_normal_image_view = CreateImageView(*g_gbuffer_normal_image,1,format,vk::ImageAspectFlagBits::eColor);
+    CreateImage(
+      g_swapchain_extent.width,g_swapchain_extent.height,1,g_msaa_samples,format,vk::ImageTiling::eOptimal,vk::ImageUsageFlagBits::eTransientAttachment|
+      vk::ImageUsageFlagBits::eColorAttachment|
+      vk::ImageUsageFlagBits::eInputAttachment,
+      vk::MemoryPropertyFlagBits::eDeviceLocal,
+      g_gbuffer_diffuse_specular_image,g_gbuffer_diffuse_specular_image_memory
+    );
+    g_gbuffer_diffuse_specular_image_view = CreateImageView(*g_gbuffer_diffuse_specular_image,1,format,vk::ImageAspectFlagBits::eColor);
   }
   void CreateCommandPool(){
     vk::CommandPoolCreateInfo pool_info{
@@ -1289,7 +1506,7 @@ namespace {
     vk::PipelineStageFlags2 dst_stage_mask,
     vk::ImageAspectFlags aspect_flags
   ){
-    vk::ImageMemoryBarrier2 depth_barrier={
+    vk::ImageMemoryBarrier2 barrier={
       .srcStageMask = src_stage_mask,
       .srcAccessMask = src_access_mask,
       .dstStageMask = dst_stage_mask,
@@ -1310,7 +1527,7 @@ namespace {
     vk::DependencyInfo dependency_info{
       .dependencyFlags = {},
       .imageMemoryBarrierCount = 1,
-      .pImageMemoryBarriers = &depth_barrier,
+      .pImageMemoryBarriers = &barrier,
     };
     g_command_buffer[command_buffer_index].pipelineBarrier2(dependency_info);
   }
@@ -1333,15 +1550,54 @@ namespace {
     TransformImageLayoutCustom(g_color_image, frame_index, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, {}, vk::AccessFlagBits2::eColorAttachmentWrite, vk::PipelineStageFlagBits2::eTopOfPipe, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
     vk::ImageAspectFlagBits::eColor);
     TransformImageLayoutCustom(g_depth_image, frame_index, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal, {}, vk::AccessFlagBits2::eDepthStencilAttachmentRead|vk::AccessFlagBits2::eDepthStencilAttachmentWrite, vk::PipelineStageFlagBits2::eTopOfPipe, vk::PipelineStageFlagBits2::eEarlyFragmentTests|vk::PipelineStageFlagBits2::eLateFragmentTests, vk::ImageAspectFlagBits::eDepth);
-    vk::RenderingAttachmentInfo attachment_info{
-      .imageView = g_color_image_view,
-      .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-      .resolveMode = vk::ResolveModeFlagBits::eAverage,
-      .resolveImageView = g_swapchain_image_views[image_index],
-      .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-      .loadOp = vk::AttachmentLoadOp::eClear,
-      .storeOp = vk::AttachmentStoreOp::eStore,
-      .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 1.0f}
+    // https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_dynamic_rendering_local_read.html
+    // can not change attachments inside renderpass, use superset and remapping
+    std::vector<vk::RenderingAttachmentInfo> attachment_infos{
+      // {
+      //   .imageView = g_color_image_view,
+      //   .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+      //   .resolveMode = vk::ResolveModeFlagBits::eAverage,
+      //   .resolveImageView = g_swapchain_image_views[image_index],
+      //   .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+      //   .loadOp = vk::AttachmentLoadOp::eClear,
+      //   .storeOp = vk::AttachmentStoreOp::eStore,
+      //   .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
+      // },
+      {
+        .imageView = g_gbuffer_color_image_view,
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eDontCare,
+        .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
+      },
+      {
+        .imageView = g_gbuffer_position_image_view,
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eDontCare,
+        .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
+      },
+      {
+        .imageView = g_gbuffer_normal_image_view,
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eDontCare,
+        .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
+      },
+      {
+        .imageView = g_gbuffer_diffuse_specular_image_view,
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eDontCare,
+        .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
+      },
+      {
+        .imageView = g_swapchain_image_views[image_index],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
+      }
     };
     vk::RenderingAttachmentInfo depth_info{
       .imageView = g_depth_image_view,
@@ -1353,8 +1609,8 @@ namespace {
     vk::RenderingInfo rendering_info{
       .renderArea = {.offset = {0, 0}, .extent = g_swapchain_extent},
       .layerCount = 1,
-      .colorAttachmentCount = 1,
-      .pColorAttachments = &attachment_info,
+      .colorAttachmentCount = static_cast<uint32_t>(attachment_infos.size()),
+      .pColorAttachments = attachment_infos.data(),
       .pDepthAttachment = &depth_info
     };
     g_command_buffer[frame_index].beginRendering(rendering_info);
@@ -1366,6 +1622,14 @@ namespace {
     g_command_buffer[frame_index].setViewport(0, viewport);
     g_command_buffer[frame_index].setScissor(0, scissor);
     g_command_buffer[frame_index].drawIndexed(g_index_in.size(),1,0,0,0);
+    // lighting pass
+    std::vector<uint32_t>lighting_attachment_locations{vk::AttachmentUnused,vk::AttachmentUnused,vk::AttachmentUnused,vk::AttachmentUnused,0};
+    g_command_buffer[frame_index].setRenderingAttachmentLocations(vk::RenderingAttachmentLocationInfo{
+      .colorAttachmentCount = static_cast<uint32_t>(lighting_attachment_locations.size()),
+      .pColorAttachmentLocations = lighting_attachment_locations.data(),
+    });
+    g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_lighting_pipeline);
+    g_command_buffer[frame_index].draw(4,1,0,0);
     // barrier
     std::vector<vk::ImageMemoryBarrier2> barriers={
       {
@@ -1376,6 +1640,8 @@ namespace {
                         vk::PipelineStageFlagBits2::eLateFragmentTests,
         .dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead|
                          vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+        .oldLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+        .newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = g_depth_image,

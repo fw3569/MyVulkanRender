@@ -78,11 +78,38 @@ VertexOutput vertMain(VertexIn vertex_in) {
     return output;
 }
 
+struct Gbuffer {
+    float4 texture_color : SV_Target0;
+    float4 position : SV_Target1;
+    float4 normal : SV_Target2;
+    float4 diffuse_specular : SV_Target3;
+};
 [shader("fragment")]
-float4 fragMain(VertexOutput vertex) : SV_Target {
+Gbuffer fragMain(VertexOutput vertex) {
     float4 texture_color = texture.Sample(vertex.tex_coord);
     if (texture_color.a < 0.1) discard;
-    return float4(blinn_phong(vertex.world_pos,texture_color.rgb,vertex.diffuse_specular,vertex.normal),texture_color.a);
+    // return float4(blinn_phong(vertex.world_pos,texture_color.rgb,vertex.diffuse_specular,vertex.normal),texture_color.a);
+    Gbuffer gbuffer;
+    gbuffer.texture_color = texture_color;
+    gbuffer.position = float4(vertex.world_pos,1.0f);
+    gbuffer.normal = float4(vertex.normal,1.0f);
+    gbuffer.diffuse_specular = vertex.diffuse_specular;
+    return gbuffer;
+}
+
+[[vk::input_attachment_index(5)]] SubpassInput<float4> gbuffer_color;
+[[vk::input_attachment_index(6)]] SubpassInput<float4> gbuffer_position;
+[[vk::input_attachment_index(7)]] SubpassInput<float4> gbuffer_normal;
+[[vk::input_attachment_index(8)]] SubpassInput<float4> gbuffer_diffuse_specular;
+[shader("vertex")]
+float4 vertLighting(int vid: SV_VertexID) : SV_Position {
+    return float4(vid%2*2-1.0f, vid/2*2-1.0f, 0.0f, 1.0f);
+}
+[shader("fragment")]
+float4 fragLighting() : SV_Target {
+    float4 texture_color = gbuffer_color.SubpassLoad();
+    if (texture_color.a < 0.1) discard;
+    return float4(blinn_phong(gbuffer_position.SubpassLoad().xyz,texture_color.rgb,gbuffer_diffuse_specular.SubpassLoad(),gbuffer_normal.SubpassLoad().xyz),texture_color.a);
 }
 
 [shader("compute")]
