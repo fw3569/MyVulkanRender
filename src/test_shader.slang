@@ -82,6 +82,8 @@ void fragShadowmap() {
 
 [[vk::binding(9, 0)]]
 Texture2D<float32_t> shadowmap;
+[[vk::binding(10, 0)]]
+Sampler2D<float32_t> image_depth;
 
 // generate gbuffer
 [shader("vertex")]
@@ -119,20 +121,30 @@ Gbuffer fragMain(VertexOutput vertex) {
 [[vk::input_attachment_index(7)]] SubpassInput<float4> gbuffer_normal;
 [[vk::input_attachment_index(8)]] SubpassInput<float4> gbuffer_diffuse_specular;
 // deferred shading
+float random( float2 p )
+{
+    float2 K1 = float2(
+        23.14069263277926f, // e^pi (Gelfond's constant)
+        2.665144142690225f  // 2^sqrt(2) (Gelfondâ€“Schneider constant)
+    );
+    return fract(cos(dot(p, K1)) * 12345.6789f);
+}
 [shader("vertex")]
 float4 vertLighting(int vid : SV_VertexID) : SV_Position {
     return float4(vid%2*2-1.0f, vid/2*2-1.0f, 0.0f, 1.0f);
 }
 [shader("fragment")]
-float4 fragLighting(float4 pos : SV_Position) : SV_Target {
+float4 fragLighting() : SV_Target {
     float4 texture_color = gbuffer_color.SubpassLoad();
     if (texture_color.a < 0.1) discard;
     float3 world_pos = gbuffer_position.SubpassLoad().xyz;
-    float4 outlight = float4(blinn_phong(world_pos, texture_color.rgb, gbuffer_diffuse_specular.SubpassLoad(), gbuffer_normal.SubpassLoad().xyz), texture_color.a);
+    float3 normal = normalize(gbuffer_normal.SubpassLoad().xyz);
+    float4 outlight = float4(blinn_phong(world_pos, texture_color.rgb, gbuffer_diffuse_specular.SubpassLoad(), normal), texture_color.a);
     float4 light_space_pos = mul(ubo.light_proj, mul(ubo.light_view, float4(world_pos, 1.0f)));
     light_space_pos = light_space_pos / float4(light_space_pos.w);
     light_space_pos.xy = (light_space_pos.xy + 1.0f) / 2.0f * ubo.shadowmap_resolution;
-    if (light_space_pos.x >= 0 && light_space_pos.x < ubo.shadowmap_resolution.x && light_space_pos.y >= 0 && light_space_pos.y < ubo.shadowmap_resolution.y) {
+    float shadow_map_weight = 1.0f;
+    if (false&&light_space_pos.x >= 0 && light_space_pos.x < ubo.shadowmap_resolution.x && light_space_pos.y >= 0 && light_space_pos.y < ubo.shadowmap_resolution.y) {
         int2 point0 = int2(light_space_pos.xy);
         float block_light_z = 0.0f;
         for (int x = -2; x <= 2; ++x) {
@@ -141,19 +153,50 @@ float4 fragLighting(float4 pos : SV_Position) : SV_Target {
             }
         }
         block_light_z /= 25.0f;
-        if (block_light_z+ 1e-2 < light_space_pos.z) {
-            float shadow = 0.0f;
+        if (block_light_z + 1e-2 < light_space_pos.z) {
+            shadow_map_weight = 0.0f;
             int pcf_size = min(max(int((light_space_pos.z - block_light_z) * 2.0f / block_light_z), 2), 4);
             for (int x = -pcf_size; x <= pcf_size; ++x) {
                 for (int y = -pcf_size + abs(x); abs(x) + abs(y) <= pcf_size; ++y) {
-                    shadow += float(shadowmap[point0 + int2(x, y)] + 1e-2 >= light_space_pos.z);
+                    shadow_map_weight += float(shadowmap[point0 + int2(x, y)] + 1e-2 >= light_space_pos.z);
                 }
             }
-            shadow /= (pcf_size + 1) * pcf_size * 2 + 1;
-            return outlight * shadow;
+            shadow_map_weight /= (pcf_size + 1) * pcf_size * 2 + 1;
         }
     }
-    return outlight;
+    float ssao_weight = 1.0f;
+    if (true) { // if enable ssao
+        ssao_weight = 0.0f;
+        float3 normal_z = normal;
+        float3 normal_x;
+        float3 normal_y;
+        float random_num1 = world_pos.x;
+        float random_num2 = world_pos.y;
+        if (normal_z.z >= 1.0f - 1e07) {
+            normal_x = float3(1.0f, 0.0f, 0.0f);
+            normal_y = float3(0.0f, 1.0f, 0.0f);
+        } else {
+            normal_x = normalize(cross(normal_z, float3(0.0f, 0.0f, 1.0f)));
+            normal_y = cross(normal_z, normal_x);
+        }
+        static const int ssao_sample_count = 16;
+        for (int i = 0; i < ssao_sample_count; ++i) {
+            random_num1 = random(float2(random_num1, random_num2));
+            random_num2 = random(float2(random_num1, random_num2));
+            float theta = asin(random_num1); // distribute as cosx
+            float phi = random_num2 * 6.283185307179586f;
+            float3 sample_dir = sin(theta) * cos(phi) * normal_x + sin(theta) * sin(phi) * normal_y + cos(theta) * normal_z;
+            static const float sampel_dis = 0.05f;
+            float3 sample_point = world_pos + sample_dir * sampel_dis;
+            float4 sample_point_ndc = mul(ubo.proj, mul(ubo.view, float4(sample_point, 1.0f)));
+            sample_point_ndc /= sample_point_ndc.w;
+            sample_point_ndc.xy = (sample_point_ndc.xy + 1.0f) / 2.0f;
+            float depth = image_depth.Sample(sample_point_ndc.xy);
+            ssao_weight += float(depth >= sample_point_ndc.z);
+        }
+        ssao_weight /= ssao_sample_count;
+    }
+    return outlight * shadow_map_weight * ssao_weight;
 }
 
 // compute particles

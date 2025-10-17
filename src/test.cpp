@@ -187,6 +187,7 @@ namespace {
   vk::raii::Image g_depth_image = nullptr;
   vk::raii::DeviceMemory g_depth_image_memory  = nullptr;
   vk::raii::ImageView g_depth_image_view = nullptr;
+  vk::raii::Sampler g_depth_image_sampler = nullptr;
   vk::raii::Image g_gbuffer_color_image = nullptr;
   vk::raii::DeviceMemory g_gbuffer_color_image_memory  = nullptr;
   vk::raii::ImageView g_gbuffer_color_image_view = nullptr;
@@ -625,6 +626,13 @@ namespace {
       {
         .binding = 9,
         .descriptorType = vk::DescriptorType::eSampledImage,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .pImmutableSamplers = nullptr
+      },
+      {
+        .binding = 10,
+        .descriptorType = vk::DescriptorType::eCombinedImageSampler,
         .descriptorCount = 1,
         .stageFlags = vk::ShaderStageFlagBits::eFragment,
         .pImmutableSamplers = nullptr
@@ -1111,7 +1119,7 @@ namespace {
       },
       {
         .type=vk::DescriptorType::eCombinedImageSampler,
-        .descriptorCount=g_frame_in_flight
+        .descriptorCount=g_frame_in_flight*2
       },
       {
         .type=vk::DescriptorType::eStorageBuffer,
@@ -1164,6 +1172,11 @@ namespace {
       vk::DescriptorImageInfo shadowmap_info{
         .imageView = *g_shadowmap_image_view,
         .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+      };
+      vk::DescriptorImageInfo depth_info{
+        .sampler = *g_depth_image_sampler,
+        .imageView = *g_depth_image_view,
+        .imageLayout = vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal 
       };
       std::vector<vk::WriteDescriptorSet> descriptor_write{
         {
@@ -1245,6 +1258,14 @@ namespace {
           .descriptorCount = 1,
           .descriptorType = vk::DescriptorType::eSampledImage,
           .pImageInfo = &shadowmap_info
+        },
+        {
+          .dstSet = g_descriptor_sets[i],
+          .dstBinding = 10,
+          .dstArrayElement = 0,
+          .descriptorCount = 1,
+          .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+          .pImageInfo = &depth_info
         }
       };
       g_device.updateDescriptorSets(descriptor_write, {});
@@ -1481,11 +1502,31 @@ namespace {
     CreateImage(
       g_swapchain_extent.width,g_swapchain_extent.height,1,g_msaa_samples,g_depth_image_format,vk::ImageTiling::eOptimal,
       vk::ImageUsageFlagBits::eDepthStencilAttachment|
-      vk::ImageUsageFlagBits::eTransientAttachment,
+      vk::ImageUsageFlagBits::eSampled,
       vk::MemoryPropertyFlagBits::eDeviceLocal,
       g_depth_image,g_depth_image_memory
     );
     g_depth_image_view = CreateImageView(*g_depth_image,1,g_depth_image_format,vk::ImageAspectFlagBits::eDepth);
+    vk::PhysicalDeviceProperties properties = g_physical_device.getProperties();
+    vk::SamplerCreateInfo sampler_info{
+      .flags = {},
+      .magFilter = vk::Filter::eLinear,
+      .minFilter = vk::Filter::eLinear,
+      .mipmapMode = vk::SamplerMipmapMode::eNearest,
+      .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+      .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+      .addressModeW = vk::SamplerAddressMode::eClampToEdge,
+      .mipLodBias = 0.0f,
+      .anisotropyEnable = vk::False,
+      .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+      .compareEnable = vk::False,
+      .compareOp = vk::CompareOp::eAlways,
+      .minLod = 0,
+      .maxLod = 0,
+      .borderColor = vk::BorderColor::eIntTransparentBlack,
+      .unnormalizedCoordinates = vk::False,
+    };
+    g_depth_image_sampler = vk::raii::Sampler(g_device, sampler_info);
   }
   void CreateShadowmapResources(){
     CreateImage(
@@ -1689,7 +1730,7 @@ namespace {
     };
     vk::RenderingAttachmentInfo depth_info{
       .imageView = g_depth_image_view,
-      .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+      .imageLayout = vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal,
       .loadOp = vk::AttachmentLoadOp::eClear,
       .storeOp = vk::AttachmentStoreOp::eDontCare,
       .clearValue = vk::ClearDepthStencilValue{1.0f, 0}
@@ -1742,6 +1783,7 @@ namespace {
     g_command_buffer[frame_index].setScissor(0, scissor);
     g_command_buffer[frame_index].drawIndexed(g_index_in.size(),1,0,0,0);
     // lighting pass
+    TransformImageLayoutCustom(g_depth_image, frame_index, vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal , vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal , vk::AccessFlagBits2::eDepthStencilAttachmentRead|vk::AccessFlagBits2::eDepthStencilAttachmentWrite, vk::AccessFlagBits2::eDepthStencilAttachmentRead, vk::PipelineStageFlagBits2::eEarlyFragmentTests|vk::PipelineStageFlagBits2::eLateFragmentTests, vk::PipelineStageFlagBits2::eFragmentShader, vk::ImageAspectFlagBits::eDepth);
     std::vector<uint32_t>lighting_attachment_locations{vk::AttachmentUnused,vk::AttachmentUnused,vk::AttachmentUnused,vk::AttachmentUnused,0};
     g_command_buffer[frame_index].setRenderingAttachmentLocations(vk::RenderingAttachmentLocationInfo{
       .colorAttachmentCount = static_cast<uint32_t>(lighting_attachment_locations.size()),
@@ -1870,7 +1912,7 @@ class TriangleRhi{
     // https://learnopengl.com/Getting-started/Coordinate-Systems
     // https://learnopengl.com/Getting-started/Camera
     ubo.view = glm::lookAt(camera_pos,glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,-1.0f));
-    ubo.proj = glm::perspective<float>(glm::radians(90.0f),static_cast<float>(g_swapchain_extent.width) / static_cast<float>(g_swapchain_extent.height), 0.1f, 10.0f);
+    ubo.proj = glm::perspective<float>(glm::radians(90.0f),static_cast<float>(g_swapchain_extent.width) / static_cast<float>(g_swapchain_extent.height), 0.1f, 3.0f);
     ubo.light.pos = glm::vec3(1.0f,0.0f,2.0f);
     ubo.light.intensities = glm::vec3(10.0f,10.0f,10.0f);
     ubo.camera_pos = camera_pos;
