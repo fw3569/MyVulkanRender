@@ -69,6 +69,7 @@ float3 blinn_phong(float3 pos, float3 texture_color, float4 diffuse_specular, fl
     return texture_color * intensities_out;
 }
 
+// generate shadow map
 [shader("vertex")]
 float4 vertShadowmap(VertexIn vertex_in) : SV_Position {
     float4 pos = mul(ubo.light_proj, mul(ubo.light_view, mul(ubo.modu, float4(vertex_in.position, 1.0))));
@@ -82,6 +83,7 @@ void fragShadowmap() {
 [[vk::binding(9, 0)]]
 Texture2D<float32_t> shadowmap;
 
+// generate gbuffer
 [shader("vertex")]
 VertexOutput vertMain(VertexIn vertex_in) {
     VertexOutput output;
@@ -116,6 +118,7 @@ Gbuffer fragMain(VertexOutput vertex) {
 [[vk::input_attachment_index(6)]] SubpassInput<float4> gbuffer_position;
 [[vk::input_attachment_index(7)]] SubpassInput<float4> gbuffer_normal;
 [[vk::input_attachment_index(8)]] SubpassInput<float4> gbuffer_diffuse_specular;
+// deferred shading
 [shader("vertex")]
 float4 vertLighting(int vid : SV_VertexID) : SV_Position {
     return float4(vid%2*2-1.0f, vid/2*2-1.0f, 0.0f, 1.0f);
@@ -129,12 +132,31 @@ float4 fragLighting(float4 pos : SV_Position) : SV_Target {
     float4 light_space_pos = mul(ubo.light_proj, mul(ubo.light_view, float4(world_pos, 1.0f)));
     light_space_pos = light_space_pos / float4(light_space_pos.w);
     light_space_pos.xy = (light_space_pos.xy + 1.0f) / 2.0f * ubo.shadowmap_resolution;
-    if (light_space_pos.x >= 0 && light_space_pos.x < ubo.shadowmap_resolution.x && light_space_pos.y >= 0 && light_space_pos.y < ubo.shadowmap_resolution.y && shadowmap[int2(light_space_pos.xy)] + 1e-2 < light_space_pos.z) {
-        return outlight * 0.2f;
+    if (light_space_pos.x >= 0 && light_space_pos.x < ubo.shadowmap_resolution.x && light_space_pos.y >= 0 && light_space_pos.y < ubo.shadowmap_resolution.y) {
+        int2 point0 = int2(light_space_pos.xy);
+        float block_light_z = 0.0f;
+        for (int x = -2; x <= 2; ++x) {
+            for (int y = -2; y <= 2; ++y) {
+                block_light_z += shadowmap[point0 + int2(x, y)];
+            }
+        }
+        block_light_z /= 25.0f;
+        if (block_light_z+ 1e-2 < light_space_pos.z) {
+            float shadow = 0.0f;
+            int pcf_size = min(max(int((light_space_pos.z - block_light_z) * 2.0f / block_light_z), 2), 4);
+            for (int x = -pcf_size; x <= pcf_size; ++x) {
+                for (int y = -pcf_size + abs(x); abs(x) + abs(y) <= pcf_size; ++y) {
+                    shadow += float(shadowmap[point0 + int2(x, y)] + 1e-2 >= light_space_pos.z);
+                }
+            }
+            shadow /= (pcf_size + 1) * pcf_size * 2 + 1;
+            return outlight * shadow;
+        }
     }
     return outlight;
 }
 
+// compute particles
 [shader("compute")]
 [numthreads(256,1,1)]
 void compParticle(uint3 thread_id : SV_DispatchThreadID) {
@@ -142,6 +164,7 @@ void compParticle(uint3 thread_id : SV_DispatchThreadID) {
     particle_out[thread_id.x].color = particle_in[thread_id.x].color;
 }
 
+// draw particles
 [shader("vertex")]
 PointOutput vertParticle(Particle particle, uint vid : SV_VertexID) {
     PointOutput output;
