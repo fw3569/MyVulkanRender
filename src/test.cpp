@@ -244,7 +244,7 @@ namespace {
   vk::raii::Pipeline g_bloom_downsample_pipeline = nullptr;
   vk::raii::PipelineLayout g_bloom_upsample_pipeline_layout = nullptr;
   vk::raii::Pipeline g_bloom_upsample_pipeline = nullptr;
-  constexpr float kBloomRate = 1.5;
+  constexpr float kBloomRate = 1.5f;
 
   const std::vector kValidationLayers = {
     "VK_LAYER_KHRONOS_validation"

@@ -172,7 +172,7 @@ float4 fragLighting(float4 pos: SV_Position) : SV_Target {
         float3 normal_y;
         float random_num1 = world_pos.x;
         float random_num2 = world_pos.y;
-        if (normal_z.z >= 1.0f - 1e07) {
+        if (normal_z.z >= 1.0f - 1e-07) {
             normal_x = float3(1.0f, 0.0f, 0.0f);
             normal_y = float3(0.0f, 1.0f, 0.0f);
         } else {
@@ -183,7 +183,8 @@ float4 fragLighting(float4 pos: SV_Position) : SV_Target {
         for (int i = 0; i < ssao_sample_count; ++i) {
             random_num1 = random(float2(random_num1, random_num2));
             random_num2 = random(float2(random_num1, random_num2));
-            float theta = asin(random_num1); // distribute as cosx
+            // float theta = asin(random_num1); // distribute as cosx in axis
+            float theta = acos(1 - 2 * random_num1) / 2; // pdf cosx in sphere
             float phi = random_num2 * 6.283185307179586f;
             float3 sample_dir = sin(theta) * cos(phi) * normal_x + sin(theta) * sin(phi) * normal_y + cos(theta) * normal_z;
             static const float sampel_dis = 0.05f;
