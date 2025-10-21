@@ -1,6 +1,6 @@
 Compile environment: Windows, Cmake, Clang, Ninja, vcpkg
 
-Dependency package: Vulkan, glfw3
+Dependency package: Vulkan, glfw3, ImGui
 
 Please update your "CMAKE_TOOLCHAIN_FILE" in CMakeLists.txt before build.
 
@@ -33,3 +33,7 @@ Bloom(in high parameter):
 Particles:
 
 ![Particles](D:\Project\MyVulkanRender\demo_effect\Particles.png)
+
+PBR:
+
+![PBR](D:\Project\MyVulkanRender\demo_effect\PBR.png)

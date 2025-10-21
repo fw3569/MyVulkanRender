@@ -24,6 +24,8 @@ set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 find_package(glfw3 REQUIRED)
 target_link_libraries(test PRIVATE glfw)
+find_package(imgui CONFIG REQUIRED)
+target_link_libraries(test PRIVATE imgui::imgui)
 
 function(add_slang_shader_target TARGET)
   cmake_parse_arguments("SHADER" "" "" "SOURCES" ${ARGN})

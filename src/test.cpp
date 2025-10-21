@@ -29,6 +29,9 @@ import vulkan_hpp;
 #include <stb_image.h>
 #define TINYOBJLOADER_IMPLEMENTATION
 #include <tiny_obj_loader.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 
 using std::string;
 
@@ -183,6 +186,7 @@ namespace {
   std::vector<void*> g_ubo_buffer_maped;
   vk::raii::Buffer g_transfer_buffer = nullptr;
   vk::raii::DeviceMemory g_transfer_buffer_memory = nullptr;
+  void* g_transfer_buffer_maped = nullptr;
   uint32_t g_mip_levels = 1;
   vk::raii::Image g_texture_image = nullptr;
   vk::raii::DeviceMemory g_texture_image_memory  = nullptr;
@@ -244,7 +248,11 @@ namespace {
   vk::raii::Pipeline g_bloom_downsample_pipeline = nullptr;
   vk::raii::PipelineLayout g_bloom_upsample_pipeline_layout = nullptr;
   vk::raii::Pipeline g_bloom_upsample_pipeline = nullptr;
-  constexpr float kBloomRate = 1.5f;
+  constexpr float kBloomRate = 0.0f;
+  ImGuiContext* g_imgui_context;
+	vk::raii::DescriptorPool g_imgui_pool = nullptr;
+  float g_pbr_roughness = 0.5f;
+  float g_pbr_f0 = 0.04f;
 
   const std::vector kValidationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -274,6 +282,47 @@ namespace {
     g_window = glfwCreateWindow(kWindowWeight, kWindowHeight, "Vulkan", nullptr, nullptr);
     glfwSetFramebufferSizeCallback(g_window, FramebufferSizeCallback);
   }
+  void InitImGui(){
+    g_imgui_context = ImGui::CreateContext();
+    vk::DescriptorPoolSize pool_sizes[] = {
+      {vk::DescriptorType::eSampler, 1000},
+      {vk::DescriptorType::eCombinedImageSampler, 1000},
+      {vk::DescriptorType::eSampledImage, 1000},
+      {vk::DescriptorType::eStorageImage, 1000},
+      {vk::DescriptorType::eUniformTexelBuffer, 1000},
+      {vk::DescriptorType::eStorageTexelBuffer, 1000},
+      {vk::DescriptorType::eUniformBuffer, 1000},
+      {vk::DescriptorType::eStorageBuffer, 1000},
+      {vk::DescriptorType::eUniformBufferDynamic, 1000},
+      {vk::DescriptorType::eStorageBufferDynamic, 1000},
+      {vk::DescriptorType::eInputAttachment, 100 }
+    };
+    vk::DescriptorPoolCreateInfo pool_info = {
+      .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+      .maxSets = 1000,
+      .poolSizeCount = (uint32_t)std::size(pool_sizes),
+      .pPoolSizes = pool_sizes
+    };
+    g_imgui_pool = vk::raii::DescriptorPool(g_device, pool_info);
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.Instance = *g_vk_instance;
+    init_info.PhysicalDevice = *g_physical_device;
+    init_info.Device = *g_device;
+    init_info.Queue = *g_queue;
+    init_info.DescriptorPool = *g_imgui_pool;
+    init_info.MinImageCount = 3;
+    init_info.ImageCount = 3;
+    init_info.UseDynamicRendering = true;
+    init_info.PipelineRenderingCreateInfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    VkFormat format = static_cast<VkFormat>(g_swapchain_image_format);
+    init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &format;
+    init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    ImGui_ImplVulkan_Init(&init_info);
+    ImGui_ImplVulkan_CreateFontsTexture();
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForVulkan(g_window, true);
+  }
   void CreateInstance();
   void CreateaSurface();
   void PickPhysicalDevice();
@@ -292,6 +341,7 @@ namespace {
   void CreateTextureSampler();
   void CreateDateBuffers();
   void LoadModel();
+  void UpdateModel();
   void CreateVertexBuffer();
   void CreateIndexBuffer();
   void CreateUboBuffer();
@@ -1087,7 +1137,7 @@ namespace {
             attr.vertices[3*index.vertex_index+1],
             attr.vertices[3*index.vertex_index+2]
           },
-          .roughness_f0 = {0.5f,0.04f,0.04f,0.04f},
+          .roughness_f0 = {g_pbr_roughness, g_pbr_f0, g_pbr_f0, g_pbr_f0},
           .normal = {
             attr.normals[3*index.normal_index+0],
             attr.normals[3*index.normal_index+1],
@@ -1111,19 +1161,24 @@ namespace {
     CreateBuffer(
       size, vk::BufferUsageFlagBits::eTransferSrc, vk::SharingMode::eExclusive,
       vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, g_transfer_buffer, g_transfer_buffer_memory);
-    void* data = g_transfer_buffer_memory.mapMemory(0, size);
-    memcpy(data, g_vertex_in.data(), size);
-    g_transfer_buffer_memory.unmapMemory();
+    g_transfer_buffer_maped = g_transfer_buffer_memory.mapMemory(0, size);
+    memcpy(g_transfer_buffer_maped, g_vertex_in.data(), size);
     CreateBuffer(
       size, vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive,
       vk::MemoryPropertyFlagBits::eDeviceLocal, g_vertex_buffer, g_vertex_buffer_memory);
     CopyBuffer(g_transfer_buffer,g_vertex_buffer, size);
   }
+  void UpdateModel(){
+    for(Vertex& vertex : g_vertex_in){
+      vertex.roughness_f0 = {g_pbr_roughness, g_pbr_f0, g_pbr_f0, g_pbr_f0};
+    }
+    uint32_t size = sizeof(g_vertex_in[0])*g_vertex_in.size();
+    memcpy(g_transfer_buffer_maped, g_vertex_in.data(), size);
+    CopyBuffer(g_transfer_buffer,g_vertex_buffer, size);
+  }
   void CreateIndexBuffer(){
     uint32_t size = sizeof(g_index_in[0])*g_index_in.size();
-    void* data = g_transfer_buffer_memory.mapMemory(0, size);
-    memcpy(data, g_index_in.data(), size);
-    g_transfer_buffer_memory.unmapMemory();
+    memcpy(g_transfer_buffer_maped, g_index_in.data(), size);
     CreateBuffer(
       size, vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive,
       vk::MemoryPropertyFlagBits::eDeviceLocal, g_index_buffer, g_index_buffer_memory);
@@ -2064,10 +2119,36 @@ namespace {
       image_index,
       frame_index,
       vk::ImageLayout::eTransferDstOptimal,
-      vk::ImageLayout::ePresentSrcKHR,
+      vk::ImageLayout::eColorAttachmentOptimal,
       vk::AccessFlagBits2::eTransferWrite,
-      {},
+      vk::AccessFlagBits2::eColorAttachmentWrite,
       vk::PipelineStageFlagBits2::eTransfer,
+      vk::PipelineStageFlagBits2::eColorAttachmentOutput
+    );
+    std::vector<vk::RenderingAttachmentInfo>imgui_attachment_infos{
+      {
+        .imageView = g_swapchain_image_views[image_index],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eLoad,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+      }
+    };
+    vk::RenderingInfo imgui_rendering_info = rendering_info;
+    imgui_rendering_info.colorAttachmentCount = static_cast<uint32_t>(imgui_attachment_infos.size());
+    imgui_rendering_info.pColorAttachments = imgui_attachment_infos.data();
+    imgui_rendering_info.pDepthAttachment = nullptr;
+    g_command_buffer[frame_index].beginRendering(imgui_rendering_info);
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *g_command_buffer[frame_index]);
+    g_command_buffer[frame_index].endRendering();
+
+    TransformImageLayout(
+      image_index,
+      frame_index,
+      vk::ImageLayout::eColorAttachmentOptimal,
+      vk::ImageLayout::ePresentSrcKHR,
+      vk::AccessFlagBits2::eColorAttachmentWrite,
+      {},
+      vk::PipelineStageFlagBits2::eColorAttachmentOutput,
       vk::PipelineStageFlagBits2::eBottomOfPipe
     );
     g_command_buffer[frame_index].end();
@@ -2127,10 +2208,30 @@ class TriangleRhi{
       static double next_draw_time = 0.0;
       m_current_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()/1000.0;
       glfwPollEvents();
+
+      ImGui_ImplVulkan_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+      ImGui::Begin("Variables");
+      if (ImGui::BeginTable("VariablesTable", 2)) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("Roughness:");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SliderFloat("##RoughnessSlider", &g_pbr_roughness, 0.0f, 1.0f, "%.2f"); 
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("F0:");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SliderFloat("##F0Slider", &g_pbr_f0, 0.0f, 1.0f, "%.2f"); 
+        ImGui::EndTable();
+      }
+      ImGui::End();
+      ImGui::Render();
+
       if(next_draw_time < m_current_time && Tick()){
         next_draw_time = m_current_time+draw_internal;
       }
-      // std::this_thread::sleep_for(std::chrono::seconds(10));
     }
 
     g_device.waitIdle();
@@ -2141,7 +2242,7 @@ class TriangleRhi{
   bool CpuPrepareData(){
     UniformBufferObject ubo;
     glm::vec3 camera_pos{1.0f,1.0f,1.0f};
-    ubo.modu = glm::rotate<float>(glm::mat4(1.0f),(m_current_time-m_start_time)*glm::radians(10.0f),glm::vec3(0.0f,0.0f,1.0f));
+    ubo.modu = glm::rotate<float>(glm::mat4(1.0f),(m_current_time-m_start_time)*glm::radians(0.0f),glm::vec3(0.0f,0.0f,1.0f));
     // https://learnopengl.com/Getting-started/Coordinate-Systems
     // https://learnopengl.com/Getting-started/Camera
     ubo.view = glm::lookAt(camera_pos,glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,-1.0f));
@@ -2154,6 +2255,7 @@ class TriangleRhi{
     ubo.shadowmap_resolution = glm::vec2(g_shadowmap_width, g_shadowmap_height);
     ubo.shadowmap_scale = glm::vec2(g_shadowmap_width/(float)g_swapchain_extent.width,g_shadowmap_height/(float)g_swapchain_extent.height);
     memcpy(g_ubo_buffer_maped[m_frame_index], &ubo, sizeof(ubo));
+    UpdateModel();
     return true;
   }
   void UpdateParticle(){
@@ -2258,6 +2360,9 @@ class TriangleRhi{
     return result==vk::Result::eSuccess||result==vk::Result::eSuboptimalKHR;
   }
   void Cleanup(){
+		ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
     glfwDestroyWindow(g_window);
     glfwTerminate();
   }
@@ -2272,6 +2377,7 @@ int main (int argc, char** argv){
   try{
     InitWindow();
     InitVulkan();
+    InitImGui();
     worker.Run();
   }catch(const std::exception& e){
     std::cerr<<e.what()<<std::endl;
