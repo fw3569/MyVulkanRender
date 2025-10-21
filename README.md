@@ -12,28 +12,28 @@ Note: This program is force set to 30 fps
 
 Final Effect:
 
-![Final](D:\Project\MyVulkanRender\demo_effect\Final.png)
+![Final](./demo_effect/Final.png)
 
 Blinn-Phong:
 
-![Blinn-Phong](D:\Project\MyVulkanRender\demo_effect\Blinn-Phong.png)
+![Blinn-Phong](./demo_effect/Blinn-Phong.png)
 
 ShadowMap+PCF:
 
-![ShadowMap](D:\Project\MyVulkanRender\demo_effect\ShadowMap.png)
+![ShadowMap](./demo_effect/ShadowMap.png)
 
 SSAO:
 
-![SSAO](D:\Project\MyVulkanRender\demo_effect\SSAO.png)
+![SSAO](./demo_effect/SSAO.png)
 
 Bloom(in high parameter):
 
-![Bloom](D:\Project\MyVulkanRender\demo_effect\Bloom.png)
+![Bloom](./demo_effect/Bloom.png)
 
 Particles:
 
-![Particles](D:\Project\MyVulkanRender\demo_effect\Particles.png)
+![Particles](./demo_effect/Particles.png)
 
 PBR:
 
-![PBR](D:\Project\MyVulkanRender\demo_effect\PBR.png)
+![PBR](./demo_effect/PBR.png)
