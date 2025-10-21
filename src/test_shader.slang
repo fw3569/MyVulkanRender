@@ -1,6 +1,7 @@
+static const float PI = 3.141592653589793;
 struct VertexIn {
     float3 position;
-    float4 diffuse_specular;
+    float4 roughness_f0;
     float3 normal;
     float2 tex_coord;
 };
@@ -28,7 +29,7 @@ Sampler2D texture;
 struct VertexOutput {
     float4 sv_position : SV_Position;
     float3 world_pos;
-    float4 diffuse_specular;
+    float4 roughness_f0;
     float3 normal;
     float2 tex_coord;
 };
@@ -73,6 +74,36 @@ float3 blinn_phong(float3 pos, float3 texture_color, float4 diffuse_specular, fl
     return intensities_out;
 }
 
+float3 cook_torrance(float3 pos, float3 texture_color, float4 roughness_f0, float3 normal, float ao_weight, float shadow_weight) {
+    normal = normalize(normal);
+    float3 light_vec = ubo.light.pos - pos;
+    float3 intensities_in = ubo.light.intensities / pow(length(light_vec), 2);
+    float3 ambient_light_in = 0.2 * intensities_in * ao_weight;
+    float3 direct_light_in = 0.8 * intensities_in * shadow_weight;
+    light_vec = normalize(light_vec);
+    float3 view_vec = normalize(ubo.camera_pos - pos);
+    float3 h = normalize(view_vec + light_vec);
+    float cosnl = dot(normal, view_vec);
+    float coshv = dot(h, view_vec);
+    float coshl = dot(h, light_vec);
+    // fresnel-schlick
+    float3 fresnel = roughness_f0.yzw + (float3(1.0f) - roughness_f0.yzw) * pow((1 - coshv), 5);
+    float3 ambient_light_out = (1 - fresnel) / PI * texture_color * ambient_light_in * 0.5;
+    if (cosnl <= 0.0f) {
+        return ambient_light_out;
+    }
+    // ggx
+    float a = pow(roughness_f0.x, 4);
+    float normal_distribution = a / (PI * pow(1 + pow(cosnl, 2) * (a - 1), 2));
+    // schlick-ggx
+    float k = pow(roughness_f0.x + 1, 2) / 8;
+    float geometry_occlusion = coshv * coshl / ((coshv * (1 - k) + k) * (coshl * (1 - k) + k));
+    float3 diffuse_light_out = (1 - fresnel) / PI * texture_color * direct_light_in * cosnl;
+    float3 specular_light_out = fresnel * normal_distribution * geometry_occlusion / (4 * coshv * coshl) * direct_light_in;
+    float3 intensities_out = ambient_light_out + diffuse_light_out + specular_light_out;
+    return intensities_out;
+}
+
 // generate shadow map
 [shader("vertex")]
 float4 vertShadowmap(VertexIn vertex_in) : SV_Position {
@@ -95,7 +126,7 @@ VertexOutput vertMain(VertexIn vertex_in) {
     VertexOutput output;
     float4 world_pos = mul(ubo.modu, float4(vertex_in.position, 1.0));
     output.sv_position = mul(ubo.proj, mul(ubo.view, world_pos));
-    output.diffuse_specular = vertex_in.diffuse_specular;
+    output.roughness_f0 = vertex_in.roughness_f0;
     output.world_pos = world_pos.xyz;
     output.normal = mul(ubo.modu, float4(vertex_in.normal, 1.0)).xyz;
     output.tex_coord = vertex_in.tex_coord;
@@ -106,7 +137,7 @@ struct Gbuffer {
     float4 texture_color : SV_Target0;
     float4 position : SV_Target1;
     float4 normal : SV_Target2;
-    float4 diffuse_specular : SV_Target3;
+    float4 roughness_f0 : SV_Target3;
 };
 [shader("fragment")]
 Gbuffer fragMain(VertexOutput vertex) {
@@ -116,14 +147,15 @@ Gbuffer fragMain(VertexOutput vertex) {
     gbuffer.texture_color = texture_color;
     gbuffer.position = float4(vertex.world_pos,1.0f);
     gbuffer.normal = float4(vertex.normal,1.0f);
-    gbuffer.diffuse_specular = vertex.diffuse_specular;
+    gbuffer.roughness_f0 = vertex.roughness_f0;
     return gbuffer;
 }
 
 [[vk::input_attachment_index(5)]] SubpassInput<float4> gbuffer_color;
 [[vk::input_attachment_index(6)]] SubpassInput<float4> gbuffer_position;
 [[vk::input_attachment_index(7)]] SubpassInput<float4> gbuffer_normal;
-[[vk::input_attachment_index(8)]] SubpassInput<float4> gbuffer_diffuse_specular;
+// roughness, f0.rgb
+[[vk::input_attachment_index(8)]] SubpassInput<float4> gbuffer_roughness_f0;
 // deferred shading
 float random( float2 p )
 {
@@ -202,7 +234,8 @@ float4 fragLighting(float4 pos: SV_Position) : SV_Target {
         }
         ssao_weight /= ssao_sample_count;
     }
-    float4 outlight = float4(blinn_phong(world_pos, texture_color.rgb, gbuffer_diffuse_specular.SubpassLoad(), normal, ssao_weight, shadow_map_weight), texture_color.a);
+    // float4 outlight = float4(blinn_phong(world_pos, texture_color.rgb, gbuffer_diffuse_specular.SubpassLoad(), normal, ssao_weight, shadow_map_weight), texture_color.a);
+    float4 outlight = float4(cook_torrance(world_pos, texture_color.rgb, gbuffer_roughness_f0.SubpassLoad(), normal, ssao_weight, shadow_map_weight), texture_color.a);
     return outlight;
 }
 

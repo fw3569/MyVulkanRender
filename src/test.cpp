@@ -54,7 +54,7 @@ std::cout<<std::endl;}
 namespace {
   struct Vertex{
     alignas(16) glm::vec3 position;
-    alignas(16) glm::vec4 diffuse_specular;
+    alignas(16) glm::vec4 roughness_f0;
     alignas(16) glm::vec3 normal;
     glm::vec2 tex_coord;
 
@@ -64,13 +64,13 @@ namespace {
     static std::array<vk::VertexInputAttributeDescription, 4> GetAttributeDescription(){
       return {
         vk::VertexInputAttributeDescription{0,0,vk::Format::eR32G32B32Sfloat,   offsetof(Vertex,position)},
-        vk::VertexInputAttributeDescription{1,0,vk::Format::eR32G32B32A32Sfloat,offsetof(Vertex,diffuse_specular)},
+        vk::VertexInputAttributeDescription{1,0,vk::Format::eR32G32B32A32Sfloat,offsetof(Vertex,roughness_f0)},
         vk::VertexInputAttributeDescription{2,0,vk::Format::eR32G32B32Sfloat,offsetof(Vertex,normal)},
         vk::VertexInputAttributeDescription{3,0,vk::Format::eR32G32Sfloat,offsetof(Vertex,tex_coord)}
       };
     }
     bool operator==(const Vertex& other) const {
-      return position == other.position && diffuse_specular == other.diffuse_specular && tex_coord == other.tex_coord;
+      return position == other.position && roughness_f0 == other.roughness_f0 && tex_coord == other.tex_coord;
     }
   };
   // std::vector<Vertex> g_vertex_in{
@@ -135,7 +135,7 @@ namespace std {
     template<> struct hash<Vertex> {
         size_t operator()(Vertex const& vertex) const {
             return ((hash<glm::vec3>()(vertex.position) ^
-                   (hash<glm::vec3>()(vertex.diffuse_specular) << 1)) >> 1) ^
+                   (hash<glm::vec3>()(vertex.roughness_f0) << 1)) >> 1) ^
                    (hash<glm::vec2>()(vertex.tex_coord) << 1);
         }
     };
@@ -201,9 +201,9 @@ namespace {
   vk::raii::Image g_gbuffer_normal_image = nullptr;
   vk::raii::DeviceMemory g_gbuffer_normal_image_memory  = nullptr;
   vk::raii::ImageView g_gbuffer_normal_image_view = nullptr;
-  vk::raii::Image g_gbuffer_diffuse_specular_image = nullptr;
-  vk::raii::DeviceMemory g_gbuffer_diffuse_specular_image_memory  = nullptr;
-  vk::raii::ImageView g_gbuffer_diffuse_specular_image_view = nullptr;
+  vk::raii::Image g_gbuffer_roughness_f0_image = nullptr;
+  vk::raii::DeviceMemory g_gbuffer_roughness_f0_image_memory  = nullptr;
+  vk::raii::ImageView g_gbuffer_roughness_f0_image_view = nullptr;
   vk::Format g_depth_image_format = vk::Format::eUndefined;
   vk::raii::CommandPool g_command_pool = nullptr;
   std::vector<vk::raii::CommandBuffer> g_command_buffer;
@@ -1087,7 +1087,7 @@ namespace {
             attr.vertices[3*index.vertex_index+1],
             attr.vertices[3*index.vertex_index+2]
           },
-          .diffuse_specular = {0.9f,0.9f,0.9f,30.0f},
+          .roughness_f0 = {0.5f,0.04f,0.04f,0.04f},
           .normal = {
             attr.normals[3*index.normal_index+0],
             attr.normals[3*index.normal_index+1],
@@ -1253,8 +1253,8 @@ namespace {
         .imageView = *g_gbuffer_normal_image_view,
         .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
       };
-      vk::DescriptorImageInfo gbuffer_diffuse_specular_info{
-        .imageView = *g_gbuffer_diffuse_specular_image_view,
+      vk::DescriptorImageInfo gbuffer_roughness_f0_info{
+        .imageView = *g_gbuffer_roughness_f0_image_view,
         .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
       };
       vk::DescriptorImageInfo shadowmap_info{
@@ -1341,7 +1341,7 @@ namespace {
           .dstArrayElement = 0,
           .descriptorCount = 1,
           .descriptorType = vk::DescriptorType::eInputAttachment,
-          .pImageInfo = &gbuffer_diffuse_specular_info
+          .pImageInfo = &gbuffer_roughness_f0_info
         },
         {
           .dstSet = g_descriptor_sets[i],
@@ -1670,9 +1670,9 @@ namespace {
       vk::ImageUsageFlagBits::eColorAttachment|
       vk::ImageUsageFlagBits::eInputAttachment,
       vk::MemoryPropertyFlagBits::eDeviceLocal,
-      g_gbuffer_diffuse_specular_image,g_gbuffer_diffuse_specular_image_memory
+      g_gbuffer_roughness_f0_image,g_gbuffer_roughness_f0_image_memory
     );
-    g_gbuffer_diffuse_specular_image_view = CreateImageView(*g_gbuffer_diffuse_specular_image,0,1,format,vk::ImageAspectFlagBits::eColor);
+    g_gbuffer_roughness_f0_image_view = CreateImageView(*g_gbuffer_roughness_f0_image,0,1,format,vk::ImageAspectFlagBits::eColor);
   }
   void CreateBloomResources(){
     CreateImage(
@@ -1834,7 +1834,7 @@ namespace {
         .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
       },
       {
-        .imageView = g_gbuffer_diffuse_specular_image_view,
+        .imageView = g_gbuffer_roughness_f0_image_view,
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
         .loadOp = vk::AttachmentLoadOp::eClear,
         .storeOp = vk::AttachmentStoreOp::eDontCare,
