@@ -1087,7 +1087,7 @@ namespace {
             attr.vertices[3*index.vertex_index+1],
             attr.vertices[3*index.vertex_index+2]
           },
-          .diffuse_specular = {0.1f,0.1f,0.1f,30.0f},
+          .diffuse_specular = {0.9f,0.9f,0.9f,30.0f},
           .normal = {
             attr.normals[3*index.normal_index+0],
             attr.normals[3*index.normal_index+1],
@@ -2147,7 +2147,7 @@ class TriangleRhi{
     ubo.view = glm::lookAt(camera_pos,glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,-1.0f));
     ubo.proj = glm::perspective<float>(glm::radians(90.0f),static_cast<float>(g_swapchain_extent.width) / static_cast<float>(g_swapchain_extent.height), 0.1f, 3.0f);
     ubo.light.pos = glm::vec3(1.0f,0.0f,2.0f);
-    ubo.light.intensities = glm::vec3(30.0f,30.0f,30.0f);
+    ubo.light.intensities = glm::vec3(10.0f,10.0f,10.0f);
     ubo.camera_pos = camera_pos;
     ubo.light_view = glm::lookAt(ubo.light.pos,glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,-1.0f));
     ubo.light_proj = glm::perspective<float>(glm::radians(90.0f),static_cast<float>(g_shadowmap_width) / static_cast<float>(g_shadowmap_height), 0.8f, 3.0f);
