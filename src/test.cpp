@@ -94,7 +94,12 @@ namespace {
     alignas(8) glm::vec2 shadowmap_resolution;
     alignas(8) glm::vec2 shadowmap_scale;
   };
-  struct PushConstants{
+  // push_constants size should be multiple of 4
+  struct LightingPushConstants{
+    int32_t enable_ssao;
+  };
+  
+  struct BloomPushConstants{
     uint32_t bloom_mip_level;
     float bloom_factor;
   };
@@ -240,6 +245,8 @@ namespace {
   float g_pbr_f0 = 0.04f;
   float g_pbr_metallic = 0.0f;
   float g_light_intensity = 10.0f;
+  bool g_enable_ssao = true;
+  bool g_enable_bloom = true;
 
   const std::vector kValidationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -869,7 +876,20 @@ namespace {
       .depthBoundsTestEnable = vk::False,
       .stencilTestEnable = vk::False
     };
-    g_lighting_pipeline_layout = vk::raii::PipelineLayout(g_device, pipeline_layout_info);
+    std::vector<vk::PushConstantRange>lighting_push_constant_range{
+      {
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .offset = 0,
+        .size = sizeof(LightingPushConstants),
+      }
+    };
+    vk::PipelineLayoutCreateInfo lighting_pipeline_layout_info{
+      .setLayoutCount = 1,
+      .pSetLayouts = &*g_descriptor_set_layout,
+      .pushConstantRangeCount = static_cast<uint32_t>(lighting_push_constant_range.size()),
+      .pPushConstantRanges = lighting_push_constant_range.data()
+    };
+    g_lighting_pipeline_layout = vk::raii::PipelineLayout(g_device, lighting_pipeline_layout_info);
     lighting_pipeline_info.pNext = &lighting_pipeline_rending_info;
     lighting_pipeline_info.pStages = lighting_pipeline_shader_stage_create_info;
     lighting_pipeline_info.pVertexInputState = &lighting_vertex_input_info;
@@ -924,7 +944,7 @@ namespace {
       {
         .stageFlags = vk::ShaderStageFlagBits::eFragment,
         .offset = 0,
-        .size = sizeof(PushConstants),
+        .size = sizeof(BloomPushConstants),
       }
     };
     vk::PipelineLayoutCreateInfo bloom_pipeline_layout_info{
@@ -1955,6 +1975,8 @@ namespace {
     });
     g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_lighting_pipeline);
     g_command_buffer[frame_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_lighting_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
+    LightingPushConstants lighting_push_constants{.enable_ssao = g_enable_ssao};
+    g_command_buffer[frame_index].pushConstants<LightingPushConstants>(g_lighting_pipeline_layout,vk::ShaderStageFlagBits::eFragment,0,lighting_push_constants);
     g_command_buffer[frame_index].draw(4,1,0,0);
     // barrier
     std::vector<vk::ImageMemoryBarrier2> barriers={
@@ -1993,6 +2015,7 @@ namespace {
     g_command_buffer[frame_index].draw(kParticleCount,1,0,0);
     g_command_buffer[frame_index].endRendering();
     
+    // bloom pass
     vk::ImageMemoryBarrier bloom_barrier{
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2005,88 +2028,90 @@ namespace {
         .layerCount = 1
       }
     };
-    bloom_barrier.subresourceRange.baseMipLevel = 0;
-    bloom_barrier.subresourceRange.levelCount = g_bloom_mip_levels;
-    bloom_barrier.oldLayout = vk::ImageLayout::eGeneral;
-    bloom_barrier.newLayout = vk::ImageLayout::eGeneral;
-    bloom_barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-    bloom_barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite;
-    g_command_buffer[frame_index].pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,vk::PipelineStageFlagBits::eFragmentShader,{},{},nullptr,bloom_barrier);
-    bloom_barrier.subresourceRange.levelCount = 1;
-    std::vector<vk::RenderingAttachmentInfo>bloom_attachment_infos;
-    for(int i=0;i<g_bloom_mip_levels;++i){
-      bloom_attachment_infos.emplace_back(
-        vk::RenderingAttachmentInfo{
-          .imageView = g_bloom_image_views[i],
-          .imageLayout = vk::ImageLayout::eGeneral,
-          .loadOp = vk::AttachmentLoadOp::eLoad,
-          .storeOp = vk::AttachmentStoreOp::eStore,
-          .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
-        }
-      );
-    }
-    vk::RenderingInfo bloom_rendering_info = rendering_info;
-    bloom_rendering_info.colorAttachmentCount = static_cast<uint32_t>(bloom_attachment_infos.size());
-    bloom_rendering_info.pColorAttachments = bloom_attachment_infos.data();
-    bloom_rendering_info.pDepthAttachment = nullptr;
-    g_command_buffer[frame_index].beginRendering(bloom_rendering_info);
-    g_command_buffer[frame_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_bloom_upsample_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
-    vk::Viewport bloom_viewport = viewport;
-    g_command_buffer[frame_index].setScissor(0, scissor);
-    std::vector<uint32_t>bloom_attachment_locations(g_bloom_mip_levels,vk::AttachmentUnused);
-    int32_t mip_width = g_swapchain_extent.width, mip_height = g_swapchain_extent.height;
-    std::vector<int32_t>bloom_widths, bloom_heights;
-    bloom_widths.emplace_back(mip_width);
-    bloom_heights.emplace_back(mip_height);
-    g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_bloom_downsample_pipeline);
-    PushConstants push_constants{.bloom_mip_level = 0, .bloom_factor = 0.0f};
-    for(uint32_t i=1;i<g_bloom_mip_levels;++i){
-      mip_width = mip_width>1?mip_width/2:1;
-      mip_height = mip_height>1?mip_height/2:1;
+    if (g_enable_bloom){
+      bloom_barrier.subresourceRange.baseMipLevel = 0;
+      bloom_barrier.subresourceRange.levelCount = g_bloom_mip_levels;
+      bloom_barrier.oldLayout = vk::ImageLayout::eGeneral;
+      bloom_barrier.newLayout = vk::ImageLayout::eGeneral;
+      bloom_barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+      bloom_barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead|vk::AccessFlagBits::eShaderWrite;
+      g_command_buffer[frame_index].pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,vk::PipelineStageFlagBits::eFragmentShader,{},{},nullptr,bloom_barrier);
+      bloom_barrier.subresourceRange.levelCount = 1;
+      std::vector<vk::RenderingAttachmentInfo>bloom_attachment_infos;
+      for(int i=0;i<g_bloom_mip_levels;++i){
+        bloom_attachment_infos.emplace_back(
+          vk::RenderingAttachmentInfo{
+            .imageView = g_bloom_image_views[i],
+            .imageLayout = vk::ImageLayout::eGeneral,
+            .loadOp = vk::AttachmentLoadOp::eLoad,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+            .clearValue = vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}
+          }
+        );
+      }
+      vk::RenderingInfo bloom_rendering_info = rendering_info;
+      bloom_rendering_info.colorAttachmentCount = static_cast<uint32_t>(bloom_attachment_infos.size());
+      bloom_rendering_info.pColorAttachments = bloom_attachment_infos.data();
+      bloom_rendering_info.pDepthAttachment = nullptr;
+      g_command_buffer[frame_index].beginRendering(bloom_rendering_info);
+      g_command_buffer[frame_index].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, g_bloom_upsample_pipeline_layout,0,*g_descriptor_sets[frame_index],nullptr);
+      vk::Viewport bloom_viewport = viewport;
+      g_command_buffer[frame_index].setScissor(0, scissor);
+      std::vector<uint32_t>bloom_attachment_locations(g_bloom_mip_levels,vk::AttachmentUnused);
+      int32_t mip_width = g_swapchain_extent.width, mip_height = g_swapchain_extent.height;
+      std::vector<int32_t>bloom_widths, bloom_heights;
       bloom_widths.emplace_back(mip_width);
       bloom_heights.emplace_back(mip_height);
-      bloom_viewport.width = mip_width;
-      bloom_viewport.height = mip_height;
-      g_command_buffer[frame_index].setViewport(0, bloom_viewport);
-      push_constants.bloom_mip_level = i;
-      g_command_buffer[frame_index].pushConstants<PushConstants>(g_bloom_upsample_pipeline_layout,vk::ShaderStageFlagBits::eFragment,0,push_constants);
-      bloom_attachment_locations[i]=0;
-      g_command_buffer[frame_index].setRenderingAttachmentLocations(vk::RenderingAttachmentLocationInfo{
-        .colorAttachmentCount = static_cast<uint32_t>(bloom_attachment_locations.size()),
-        .pColorAttachmentLocations = bloom_attachment_locations.data(),
-      });
-      g_command_buffer[frame_index].draw(4,1,0,0);
-      bloom_attachment_locations[i]=vk::AttachmentUnused;
-      bloom_barrier.subresourceRange.baseMipLevel = i;
-      bloom_barrier.oldLayout = vk::ImageLayout::eGeneral;
-      bloom_barrier.newLayout = vk::ImageLayout::eGeneral;
-      bloom_barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
-      bloom_barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-      g_command_buffer[frame_index].pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader,vk::PipelineStageFlagBits::eFragmentShader,vk::DependencyFlagBits::eByRegion,{},nullptr,bloom_barrier);
+      g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_bloom_downsample_pipeline);
+      BloomPushConstants bloom_push_constants{.bloom_mip_level = 0, .bloom_factor = 0.0f};
+      for(uint32_t i=1;i<g_bloom_mip_levels;++i){
+        mip_width = mip_width>1?mip_width/2:1;
+        mip_height = mip_height>1?mip_height/2:1;
+        bloom_widths.emplace_back(mip_width);
+        bloom_heights.emplace_back(mip_height);
+        bloom_viewport.width = mip_width;
+        bloom_viewport.height = mip_height;
+        g_command_buffer[frame_index].setViewport(0, bloom_viewport);
+        bloom_push_constants.bloom_mip_level = i;
+        g_command_buffer[frame_index].pushConstants<BloomPushConstants>(g_bloom_upsample_pipeline_layout,vk::ShaderStageFlagBits::eFragment,0,bloom_push_constants);
+        bloom_attachment_locations[i]=0;
+        g_command_buffer[frame_index].setRenderingAttachmentLocations(vk::RenderingAttachmentLocationInfo{
+          .colorAttachmentCount = static_cast<uint32_t>(bloom_attachment_locations.size()),
+          .pColorAttachmentLocations = bloom_attachment_locations.data(),
+        });
+        g_command_buffer[frame_index].draw(4,1,0,0);
+        bloom_attachment_locations[i]=vk::AttachmentUnused;
+        bloom_barrier.subresourceRange.baseMipLevel = i;
+        bloom_barrier.oldLayout = vk::ImageLayout::eGeneral;
+        bloom_barrier.newLayout = vk::ImageLayout::eGeneral;
+        bloom_barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+        bloom_barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+        g_command_buffer[frame_index].pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader,vk::PipelineStageFlagBits::eFragmentShader,vk::DependencyFlagBits::eByRegion,{},nullptr,bloom_barrier);
+      }
+      g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_bloom_upsample_pipeline);
+      bloom_push_constants.bloom_factor = kBloomRate / (kBloomRate + 1);
+      for(int i=g_bloom_mip_levels-2;i>=0;--i){
+        bloom_viewport.width = bloom_widths[i];
+        bloom_viewport.height = bloom_heights[i];
+        g_command_buffer[frame_index].setViewport(0, bloom_viewport);
+        bloom_push_constants.bloom_mip_level = i;
+        g_command_buffer[frame_index].pushConstants<BloomPushConstants>(g_bloom_upsample_pipeline_layout,vk::ShaderStageFlagBits::eFragment,0,bloom_push_constants);
+        bloom_attachment_locations[i]=0;
+        g_command_buffer[frame_index].setRenderingAttachmentLocations(vk::RenderingAttachmentLocationInfo{
+          .colorAttachmentCount = static_cast<uint32_t>(bloom_attachment_locations.size()),
+          .pColorAttachmentLocations = bloom_attachment_locations.data(),
+        });
+        g_command_buffer[frame_index].draw(4,1,0,0);
+        bloom_attachment_locations[i]=vk::AttachmentUnused;
+        bloom_barrier.subresourceRange.baseMipLevel = i;
+        bloom_barrier.oldLayout = vk::ImageLayout::eGeneral;
+        bloom_barrier.newLayout = vk::ImageLayout::eGeneral;
+        bloom_barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+        bloom_barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+        g_command_buffer[frame_index].pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader,vk::PipelineStageFlagBits::eFragmentShader,vk::DependencyFlagBits::eByRegion,{},nullptr,bloom_barrier);
+      }
+      g_command_buffer[frame_index].endRendering();
     }
-    g_command_buffer[frame_index].bindPipeline(vk::PipelineBindPoint::eGraphics, g_bloom_upsample_pipeline);
-    push_constants.bloom_factor = kBloomRate / (kBloomRate + 1);
-    for(int i=g_bloom_mip_levels-2;i>=0;--i){
-      bloom_viewport.width = bloom_widths[i];
-      bloom_viewport.height = bloom_heights[i];
-      g_command_buffer[frame_index].setViewport(0, bloom_viewport);
-      push_constants.bloom_mip_level = i;
-      g_command_buffer[frame_index].pushConstants<PushConstants>(g_bloom_upsample_pipeline_layout,vk::ShaderStageFlagBits::eFragment,0,push_constants);
-      bloom_attachment_locations[i]=0;
-      g_command_buffer[frame_index].setRenderingAttachmentLocations(vk::RenderingAttachmentLocationInfo{
-        .colorAttachmentCount = static_cast<uint32_t>(bloom_attachment_locations.size()),
-        .pColorAttachmentLocations = bloom_attachment_locations.data(),
-      });
-      g_command_buffer[frame_index].draw(4,1,0,0);
-      bloom_attachment_locations[i]=vk::AttachmentUnused;
-      bloom_barrier.subresourceRange.baseMipLevel = i;
-      bloom_barrier.oldLayout = vk::ImageLayout::eGeneral;
-      bloom_barrier.newLayout = vk::ImageLayout::eGeneral;
-      bloom_barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
-      bloom_barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-      g_command_buffer[frame_index].pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader,vk::PipelineStageFlagBits::eFragmentShader,vk::DependencyFlagBits::eByRegion,{},nullptr,bloom_barrier);
-    }
-    g_command_buffer[frame_index].endRendering();
 
     bloom_barrier.subresourceRange.baseMipLevel = 0;
     bloom_barrier.oldLayout = vk::ImageLayout::eGeneral;
@@ -2231,6 +2256,8 @@ class TriangleRhi{
         ImGui::SliderFloat("##LightSlider", &g_light_intensity, 0.0f, 20.0f, "%.2f");
         ImGui::EndTable();
       }
+      ImGui::Checkbox("SSAO", &g_enable_ssao);
+      ImGui::Checkbox("Bloom", &g_enable_bloom);
       ImGui::End();
       ImGui::Render();
 

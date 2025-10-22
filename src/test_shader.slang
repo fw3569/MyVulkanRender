@@ -160,6 +160,11 @@ Gbuffer fragMain(VertexOutput vertex) {
 [[vk::input_attachment_index(7)]] SubpassInput<float4> gbuffer_normal;
 // roughness, f0.rgb
 [[vk::input_attachment_index(8)]] SubpassInput<float4> gbuffer_roughness_f0;
+struct LightingPushConstants {
+    bool use_ssao;
+}
+[vk::push_constant]
+ConstantBuffer<LightingPushConstants> lighting_push_constants;
 // deferred shading
 float random( float2 p )
 {
@@ -208,7 +213,7 @@ float4 fragLighting(float4 pos: SV_Position) : SV_Target {
         }
     }
     float ssao_weight = 1.0f;
-    if (true) { // if enable ssao
+    if (lighting_push_constants.use_ssao) { // if enable ssao
         ssao_weight = 0.0f;
         float3 normal_z = normal;
         float3 normal_x;
