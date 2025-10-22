@@ -59,40 +59,25 @@ namespace {
     alignas(16) glm::vec3 position;
     alignas(16) glm::vec4 roughness_f0;
     alignas(16) glm::vec3 normal;
+    float metallic;
     glm::vec2 tex_coord;
 
     static vk::VertexInputBindingDescription GetBindingDescription(){
       return {0, sizeof(Vertex), vk::VertexInputRate::eVertex};
     }
-    static std::array<vk::VertexInputAttributeDescription, 4> GetAttributeDescription(){
+    static std::array<vk::VertexInputAttributeDescription, 5> GetAttributeDescription(){
       return {
         vk::VertexInputAttributeDescription{0,0,vk::Format::eR32G32B32Sfloat,   offsetof(Vertex,position)},
         vk::VertexInputAttributeDescription{1,0,vk::Format::eR32G32B32A32Sfloat,offsetof(Vertex,roughness_f0)},
         vk::VertexInputAttributeDescription{2,0,vk::Format::eR32G32B32Sfloat,offsetof(Vertex,normal)},
-        vk::VertexInputAttributeDescription{3,0,vk::Format::eR32G32Sfloat,offsetof(Vertex,tex_coord)}
+        vk::VertexInputAttributeDescription{3,0,vk::Format::eR32Sfloat,offsetof(Vertex,metallic)},
+        vk::VertexInputAttributeDescription{4,0,vk::Format::eR32G32Sfloat,offsetof(Vertex,tex_coord)}
       };
     }
     bool operator==(const Vertex& other) const {
-      return position == other.position && roughness_f0 == other.roughness_f0 && tex_coord == other.tex_coord;
+      return position == other.position && roughness_f0 == other.roughness_f0 && normal == other.normal && metallic == other.metallic && tex_coord == other.tex_coord;
     }
   };
-  // std::vector<Vertex> g_vertex_in{
-  //   {{-0.5f,-0.5f, 0.0f}, {1.0f,0.0f,0.0f}, {0.0f,0.0f}},
-  //   {{ 0.5f,-0.5f, 0.0f}, {0.0f,1.0f,0.0f}, {1.0f,0.0f}},
-  //   {{ 0.5f, 0.5f, 0.0f}, {0.0f,0.0f,1.0f}, {1.0f,1.0f}},
-  //   {{-0.5f, 0.5f, 0.0f}, {1.0f,1.0f,1.0f}, {0.0f,1.0f}},
-    
-  //   {{-0.5f,-0.5f,-0.5f}, {1.0f,0.0f,0.0f}, {0.0f,0.0f}},
-  //   {{ 0.5f,-0.5f,-0.5f}, {0.0f,1.0f,0.0f}, {1.0f,0.0f}},
-  //   {{ 0.5f, 0.5f,-0.5f}, {0.0f,0.0f,1.0f}, {1.0f,1.0f}},
-  //   {{-0.5f, 0.5f,-0.5f}, {1.0f,1.0f,1.0f}, {0.0f,1.0f}}
-  // };
-  // std::vector<uint16_t> g_index_in{
-  //   0,1,2,
-  //   2,3,0,
-  //   4,5,6,
-  //   6,7,4
-  // };
 
   struct UniformBufferObject{
     alignas(16) glm::mat4 modu;
@@ -248,11 +233,13 @@ namespace {
   vk::raii::Pipeline g_bloom_downsample_pipeline = nullptr;
   vk::raii::PipelineLayout g_bloom_upsample_pipeline_layout = nullptr;
   vk::raii::Pipeline g_bloom_upsample_pipeline = nullptr;
-  constexpr float kBloomRate = 0.0f;
+  constexpr float kBloomRate = 1.5f;
   ImGuiContext* g_imgui_context;
 	vk::raii::DescriptorPool g_imgui_pool = nullptr;
   float g_pbr_roughness = 0.5f;
   float g_pbr_f0 = 0.04f;
+  float g_pbr_metallic = 0.0f;
+  float g_light_intensity = 10.0f;
 
   const std::vector kValidationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -1143,6 +1130,7 @@ namespace {
             attr.normals[3*index.normal_index+1],
             attr.normals[3*index.normal_index+2],
           },
+          .metallic = g_pbr_metallic,
           .tex_coord = {
             attr.texcoords[2*index.texcoord_index+0],
             1.0f-attr.texcoords[2*index.texcoord_index+1]
@@ -1156,6 +1144,15 @@ namespace {
       }
     }
   }
+  void UpdateModel(){
+    for(Vertex& vertex : g_vertex_in){
+      vertex.roughness_f0 = {g_pbr_roughness, g_pbr_f0, g_pbr_f0, g_pbr_f0};
+      vertex.metallic = g_pbr_metallic;
+    }
+    uint32_t size = sizeof(g_vertex_in[0])*g_vertex_in.size();
+    memcpy(g_transfer_buffer_maped, g_vertex_in.data(), size);
+    CopyBuffer(g_transfer_buffer,g_vertex_buffer, size);
+  }
   void CreateVertexBuffer(){
     uint32_t size = sizeof(g_vertex_in[0])*g_vertex_in.size();
     CreateBuffer(
@@ -1166,14 +1163,6 @@ namespace {
     CreateBuffer(
       size, vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive,
       vk::MemoryPropertyFlagBits::eDeviceLocal, g_vertex_buffer, g_vertex_buffer_memory);
-    CopyBuffer(g_transfer_buffer,g_vertex_buffer, size);
-  }
-  void UpdateModel(){
-    for(Vertex& vertex : g_vertex_in){
-      vertex.roughness_f0 = {g_pbr_roughness, g_pbr_f0, g_pbr_f0, g_pbr_f0};
-    }
-    uint32_t size = sizeof(g_vertex_in[0])*g_vertex_in.size();
-    memcpy(g_transfer_buffer_maped, g_vertex_in.data(), size);
     CopyBuffer(g_transfer_buffer,g_vertex_buffer, size);
   }
   void CreateIndexBuffer(){
@@ -2214,16 +2203,32 @@ class TriangleRhi{
       ImGui::NewFrame();
       ImGui::Begin("Variables");
       if (ImGui::BeginTable("VariablesTable", 2)) {
+        ImGui::TableSetupColumn("##Col0", ImGuiTableColumnFlags_WidthFixed); 
+        ImGui::TableSetupColumn("##Col1", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
         ImGui::Text("Roughness:");
         ImGui::TableSetColumnIndex(1);
-        ImGui::SliderFloat("##RoughnessSlider", &g_pbr_roughness, 0.0f, 1.0f, "%.2f"); 
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##RoughnessSlider", &g_pbr_roughness, 0.0f, 1.0f, "%.2f");
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
         ImGui::Text("F0:");
         ImGui::TableSetColumnIndex(1);
-        ImGui::SliderFloat("##F0Slider", &g_pbr_f0, 0.0f, 1.0f, "%.2f"); 
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##F0Slider", &g_pbr_f0, 0.0f, 1.0f, "%.2f");
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("Metallic:");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##MetallicSlider", &g_pbr_metallic, 0.0f, 1.0f, "%.2f");
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("Light:");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##LightSlider", &g_light_intensity, 0.0f, 20.0f, "%.2f");
         ImGui::EndTable();
       }
       ImGui::End();
@@ -2242,13 +2247,13 @@ class TriangleRhi{
   bool CpuPrepareData(){
     UniformBufferObject ubo;
     glm::vec3 camera_pos{1.0f,1.0f,1.0f};
-    ubo.modu = glm::rotate<float>(glm::mat4(1.0f),(m_current_time-m_start_time)*glm::radians(0.0f),glm::vec3(0.0f,0.0f,1.0f));
+    ubo.modu = glm::rotate<float>(glm::mat4(1.0f),(m_current_time-m_start_time)*glm::radians(10.0f),glm::vec3(0.0f,0.0f,1.0f));
     // https://learnopengl.com/Getting-started/Coordinate-Systems
     // https://learnopengl.com/Getting-started/Camera
     ubo.view = glm::lookAt(camera_pos,glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,-1.0f));
     ubo.proj = glm::perspective<float>(glm::radians(90.0f),static_cast<float>(g_swapchain_extent.width) / static_cast<float>(g_swapchain_extent.height), 0.1f, 3.0f);
     ubo.light.pos = glm::vec3(1.0f,0.0f,2.0f);
-    ubo.light.intensities = glm::vec3(10.0f,10.0f,10.0f);
+    ubo.light.intensities = glm::vec3(g_light_intensity);
     ubo.camera_pos = camera_pos;
     ubo.light_view = glm::lookAt(ubo.light.pos,glm::vec3(0.0f,0.0f,0.0f),glm::vec3(0.0f,0.0f,-1.0f));
     ubo.light_proj = glm::perspective<float>(glm::radians(90.0f),static_cast<float>(g_shadowmap_width) / static_cast<float>(g_shadowmap_height), 0.8f, 3.0f);

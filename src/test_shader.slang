@@ -3,6 +3,7 @@ struct VertexIn {
     float3 position;
     float4 roughness_f0;
     float3 normal;
+    float metallic;
     float2 tex_coord;
 };
 
@@ -31,6 +32,7 @@ struct VertexOutput {
     float3 world_pos;
     float4 roughness_f0;
     float3 normal;
+    float metallic;
     float2 tex_coord;
 };
 
@@ -74,7 +76,7 @@ float3 blinn_phong(float3 pos, float3 texture_color, float4 diffuse_specular, fl
     return intensities_out;
 }
 
-float3 cook_torrance(float3 pos, float3 texture_color, float4 roughness_f0, float3 normal, float ao_weight, float shadow_weight) {
+float3 cook_torrance(float3 pos, float3 texture_color, float4 roughness_f0, float3 normal, float metallic, float ao_weight, float shadow_weight) {
     normal = normalize(normal);
     float3 light_vec = ubo.light.pos - pos;
     float3 intensities_in = ubo.light.intensities / pow(length(light_vec), 2);
@@ -88,7 +90,7 @@ float3 cook_torrance(float3 pos, float3 texture_color, float4 roughness_f0, floa
     float coshl = dot(h, light_vec);
     // fresnel-schlick
     float3 fresnel = roughness_f0.yzw + (float3(1.0f) - roughness_f0.yzw) * pow((1 - coshv), 5);
-    float3 ambient_light_out = (1 - fresnel) / PI * texture_color * ambient_light_in * 0.5;
+    float3 ambient_light_out = (1 - fresnel) * (1 - metallic) / PI * texture_color * ambient_light_in * 0.5;
     if (cosnl <= 0.0f) {
         return ambient_light_out;
     }
@@ -98,8 +100,8 @@ float3 cook_torrance(float3 pos, float3 texture_color, float4 roughness_f0, floa
     // schlick-ggx
     float k = pow(roughness_f0.x + 1, 2) / 8;
     float geometry_occlusion = coshv * coshl / ((coshv * (1 - k) + k) * (coshl * (1 - k) + k));
-    float3 diffuse_light_out = (1 - fresnel) / PI * texture_color * direct_light_in * cosnl;
-    float3 specular_light_out = fresnel * normal_distribution * geometry_occlusion / (4 * coshv * coshl) * direct_light_in;
+    float3 diffuse_light_out = (1 - fresnel) * (1 - metallic) / PI * texture_color * direct_light_in * cosnl;
+    float3 specular_light_out = lerp(fresnel, texture_color, metallic) * normal_distribution * geometry_occlusion / (4 * coshv * coshl) * direct_light_in;
     float3 intensities_out = ambient_light_out + diffuse_light_out + specular_light_out;
     return intensities_out;
 }
@@ -129,6 +131,7 @@ VertexOutput vertMain(VertexIn vertex_in) {
     output.roughness_f0 = vertex_in.roughness_f0;
     output.world_pos = world_pos.xyz;
     output.normal = mul(ubo.modu, float4(vertex_in.normal, 1.0)).xyz;
+    output.metallic = vertex_in.metallic;
     output.tex_coord = vertex_in.tex_coord;
     return output;
 }
@@ -136,6 +139,7 @@ VertexOutput vertMain(VertexIn vertex_in) {
 struct Gbuffer {
     float4 texture_color : SV_Target0;
     float4 position : SV_Target1;
+    // normal and metallic
     float4 normal : SV_Target2;
     float4 roughness_f0 : SV_Target3;
 };
@@ -145,8 +149,8 @@ Gbuffer fragMain(VertexOutput vertex) {
     if (texture_color.a < 0.1) discard;
     Gbuffer gbuffer;
     gbuffer.texture_color = texture_color;
-    gbuffer.position = float4(vertex.world_pos,1.0f);
-    gbuffer.normal = float4(vertex.normal,1.0f);
+    gbuffer.position = float4(vertex.world_pos, 1.0f);
+    gbuffer.normal = float4(vertex.normal, vertex.metallic);
     gbuffer.roughness_f0 = vertex.roughness_f0;
     return gbuffer;
 }
@@ -174,10 +178,12 @@ float4 fragLighting(float4 pos: SV_Position) : SV_Target {
     float4 texture_color = gbuffer_color.SubpassLoad();
     if (texture_color.a < 0.1) discard;
     float3 world_pos = gbuffer_position.SubpassLoad().xyz;
-    float3 normal = normalize(gbuffer_normal.SubpassLoad().xyz);
+    float4 normal_metallic = gbuffer_normal.SubpassLoad();
+    float3 normal = normalize(normal_metallic.xyz);
+    float metallic = normal_metallic.w;
     float shadow_map_weight = 1.0f;
     if (true) { // if enable shadow
-        float4 light_space_pos = mul(ubo.light_proj, mul(ubo.light_view, float4(world_pos, 1.0f)));
+        float4 light_space_pos = mul(ubo.light_proj, mul(ubo.light_view, float4(world_pos + 1e-2 * normal * distance(ubo.light.pos, world_pos), 1.0f)));
         light_space_pos = light_space_pos / float4(light_space_pos.w);
         light_space_pos.xy = (light_space_pos.xy + 1.0f) / 2.0f * ubo.shadowmap_resolution;
         if (light_space_pos.x >= 0 && light_space_pos.x < ubo.shadowmap_resolution.x && light_space_pos.y >= 0 && light_space_pos.y < ubo.shadowmap_resolution.y) {
@@ -189,7 +195,7 @@ float4 fragLighting(float4 pos: SV_Position) : SV_Target {
                 }
             }
             block_light_z /= 25.0f;
-            if (block_light_z + 1e-2 < light_space_pos.z) {
+            if (block_light_z < light_space_pos.z) {
                 shadow_map_weight = 0.0f;
                 int pcf_size = min(max(int((light_space_pos.z - block_light_z) * 2.0f / block_light_z), 2), 4);
                 for (int x = -pcf_size; x <= pcf_size; ++x) {
@@ -235,7 +241,7 @@ float4 fragLighting(float4 pos: SV_Position) : SV_Target {
         ssao_weight /= ssao_sample_count;
     }
     // float4 outlight = float4(blinn_phong(world_pos, texture_color.rgb, gbuffer_diffuse_specular.SubpassLoad(), normal, ssao_weight, shadow_map_weight), texture_color.a);
-    float4 outlight = float4(cook_torrance(world_pos, texture_color.rgb, gbuffer_roughness_f0.SubpassLoad(), normal, ssao_weight, shadow_map_weight), texture_color.a);
+    float4 outlight = float4(cook_torrance(world_pos, texture_color.rgb, gbuffer_roughness_f0.SubpassLoad(), normal, metallic, ssao_weight, shadow_map_weight), texture_color.a);
     return outlight;
 }
 
