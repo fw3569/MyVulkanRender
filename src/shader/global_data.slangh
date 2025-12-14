@@ -1,0 +1,28 @@
+#pragma once
+
+static const float PI = 3.141592653589793;
+struct VertexIn {
+  float3 position;
+  float4 roughness_f0;
+  float3 normal;
+  float metallic;
+  float2 tex_coord;
+};
+
+struct Light {
+  float3 pos;
+  float3 intensities;
+};
+struct UniformBufferObject {
+  float4x4 modu;
+  float4x4 view;
+  float4x4 proj;
+  Light light;
+  float3 camera_pos;
+  float4x4 light_view;
+  float4x4 light_proj;
+  float2 shadowmap_resolution;
+  float2 shadowmap_scale;
+};
+[[vk::binding(0, 0)]]
+ConstantBuffer<UniformBufferObject> ubo;
