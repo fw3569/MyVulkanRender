@@ -7,3 +7,4 @@
 vk::SampleCountFlagBits GetMaxUsableSampleCount();
 void PickPhysicalDevice();
 void CreateLogicalDevice();
+void InitDevice();

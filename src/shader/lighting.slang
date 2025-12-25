@@ -63,17 +63,13 @@ float3 cook_torrance(float3 pos, float3 texture_color, float4 roughness_f0,
   return intensities_out;
 }
 
-// [[vk::input_attachment_index(5)]]
 [[vk::binding(5, 0)]]
 SubpassInput<float4> gbuffer_color;
-// [[vk::input_attachment_index(6)]]
 [[vk::binding(6, 0)]]
 SubpassInput<float4> gbuffer_position;
-// [[vk::input_attachment_index(7)]]
 [[vk::binding(7, 0)]]
 SubpassInput<float4> gbuffer_normal;
 // roughness, f0.rgb
-// [[vk::input_attachment_index(8)]]
 [[vk::binding(8, 0)]]
 SubpassInput<float4> gbuffer_roughness_f0;
 struct LightingPushConstants {
@@ -161,7 +157,6 @@ float4 fragLighting(float4 pos: SV_Position) : SV_Target {
     for (int i = 0; i < ssao_sample_count; ++i) {
       random_num1 = random(float2(random_num1, random_num2));
       random_num2 = random(float2(random_num1, random_num2));
-      // float theta = asin(random_num1); // distribute as cosx in axis
       float theta = acos(1 - 2 * random_num1) / 2; // pdf cosx in sphere
       float phi = random_num2 * 6.283185307179586f;
       float3 sample_dir = sin(theta) * cos(phi) * normal_x +

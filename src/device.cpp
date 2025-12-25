@@ -89,6 +89,7 @@ void PickPhysicalDevice() {
   if (found == false) {
     throw std::runtime_error("failed to find a suitable GPU!");
   }
+  // disable msaa in defer lighting
   // Context::Instance()->g_msaa_samples = GetMaxUsableSampleCount();
   LOG("using physical device: ",
       Context::Instance()->g_physical_device.getProperties().deviceName);
@@ -139,4 +140,9 @@ void CreateLogicalDevice() {
   Context::Instance()->g_queue =
       vk::raii::Queue(Context::Instance()->g_device, queue_index, 0);
   Context::Instance()->g_queue_index = queue_index;
+}
+
+void InitDevice() {
+  PickPhysicalDevice();
+  CreateLogicalDevice();
 }

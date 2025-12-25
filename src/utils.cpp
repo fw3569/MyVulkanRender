@@ -14,6 +14,6 @@ std::vector<char> ReadFile(const char* file_path) {
   return buffer;
 }
 
-ExitGuard::ExitGuard(std::function<void()> func) : func(func) {}
+ExitGuard::ExitGuard(std::function<void()> func) : m_func(func) {}
 
-ExitGuard::~ExitGuard() { func(); }
+ExitGuard::~ExitGuard() { m_func(); }

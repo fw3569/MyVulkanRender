@@ -2,10 +2,8 @@
 
 #include <vector>
 
-class SwapChainManager {
- public:
-  static void CreateSwapChain();
-  static void RecreateSwapchain();
-  static void RegisterRecreateFunction(void (*func)());
-  static std::vector<void (*)()> recreate_functions;
-};
+namespace SwapChainManager {
+void CreateSwapChain();
+void RecreateSwapchain();
+void RegisterRecreateFunction(void (*func)());
+}  // namespace SwapChainManager

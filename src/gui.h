@@ -15,6 +15,4 @@ class Gui {
   void Cleanup();
   bool Closed();
   void Update();
-  static void FramebufferSizeCallback(GLFWwindow* window, int width,
-                                      int height);
 };

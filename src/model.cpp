@@ -1,5 +1,6 @@
 #include "model.h"
 
+#define NOMINMAX
 #include "command_buffer.h"
 #include "context.h"
 #include "memory.h"
@@ -71,7 +72,7 @@ void GenerateMipmaps(const vk::raii::Image& image, vk::Format format,
   EndOneTimeCommandBuffer(command_buffer);
 }
 
-void CreateTextureImage() {
+void CreateTexture() {
   int tex_width, tex_height, tex_channels;
   stbi_uc* pixels = stbi_load(DATA_FILE_PATH "/viking_room.png", &tex_width,
                               &tex_height, &tex_channels, STBI_rgb_alpha);
@@ -114,9 +115,6 @@ void CreateTextureImage() {
   Context::Instance()->g_texture_image_view = CreateImageView(
       *Context::Instance()->g_texture_image, 0, mip_levels,
       vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
-}
-
-void CreateTextureSampler() {
   vk::PhysicalDeviceProperties properties =
       Context::Instance()->g_physical_device.getProperties();
   vk::SamplerCreateInfo sampler_info{
@@ -232,4 +230,11 @@ void CreateIndexBuffer() {
                Context::Instance()->g_index_buffer_memory);
   CopyBuffer(Context::Instance()->g_transfer_buffer,
              Context::Instance()->g_index_buffer, size);
+}
+
+void LoadModel() {
+  LoadMesh();
+  CreateTexture();
+  CreateVertexBuffer();
+  CreateIndexBuffer();
 }

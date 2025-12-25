@@ -16,6 +16,7 @@ class Context {
  public:
   static constexpr uint32_t kWindowWeight = 800;
   static constexpr uint32_t kWindowHeight = 600;
+  double g_time = 0.0;
   GLFWwindow* g_window;
   std::mutex g_window_resized_mtx;
   std::atomic<bool> g_window_resized = false;
@@ -42,9 +43,6 @@ class Context {
   uint32_t g_frame_in_flight = 2;
   std::vector<vk::Image> g_swapchain_images;
   std::vector<vk::raii::ImageView> g_swapchain_image_views;
-  vk::raii::Image g_color_image = nullptr;
-  vk::raii::DeviceMemory g_color_image_memory = nullptr;
-  vk::raii::ImageView g_color_image_view = nullptr;
   vk::SampleCountFlagBits g_msaa_samples = vk::SampleCountFlagBits::e1;
   vk::raii::Buffer g_vertex_buffer = nullptr;
   vk::raii::DeviceMemory g_vertex_buffer_memory = nullptr;

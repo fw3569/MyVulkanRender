@@ -8,7 +8,9 @@
 #include "context.h"
 #include "memory.h"
 
-std::vector<void (*)()> SwapChainManager::recreate_functions;
+namespace {
+std::vector<void (*)()> recreate_functions;
+}  // namespace
 
 void SwapChainManager::CreateSwapChain() {
   auto surface_capabilities =

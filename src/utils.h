@@ -33,5 +33,5 @@ class ExitGuard {
   ~ExitGuard();
 
  private:
-  std::function<void()> func;
+  std::function<void()> m_func;
 };

@@ -18,10 +18,13 @@ add_executable(
   src/model.cpp
   src/vulkan_configure.cpp
   src/descriptor_set.cpp
-  src/pipeline.cpp
+  src/render_pass/shadowmap_pass.cpp
+  src/render_pass/defer_lighting_pass.cpp
+  src/render_pass/particle_pass.cpp
+  src/render_pass/bloom_pass.cpp
   src/render.cpp
-  src/render_system.cpp
 )
+target_include_directories(proj PRIVATE src)
 
 find_package(Vulkan REQUIRED)
 target_link_libraries(proj

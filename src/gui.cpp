@@ -2,12 +2,14 @@
 
 #include "context.h"
 
-void Gui::FramebufferSizeCallback(GLFWwindow* window, int /* width */,
-                                  int /* height */) {
+namespace {
+void FramebufferSizeCallback(GLFWwindow* window, int /* width */,
+                             int /* height */) {
   Context* context_ptr = (Context*)glfwGetWindowUserPointer(window);
   std::lock_guard lock(context_ptr->g_window_resized_mtx);
   context_ptr->g_window_resized = true;
 }
+}  // namespace
 
 void Gui::InitWindow() {
   glfwInit();
@@ -17,7 +19,7 @@ void Gui::InitWindow() {
       "Vulkan", nullptr, nullptr);
   glfwSetWindowUserPointer(Context::Instance()->g_window, Context::Instance());
   glfwSetFramebufferSizeCallback(Context::Instance()->g_window,
-                                 Gui::FramebufferSizeCallback);
+                                 FramebufferSizeCallback);
 }
 
 void Gui::CreateaSurface() {
